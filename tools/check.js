@@ -183,7 +183,7 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
         const got = await searchFor(page, q);
         ok(got === want, "поиск «" + q + "» → " + got);
       }
-      for (const q of ["сабака", "школа", "дедушка"]) {
+      for (const q of ["сабака", "вилка", "сало"]) {
         await page.goto(BASE);
         const got = await searchFor(page, q);
         const first = await page.locator(".list .item-title").first().textContent().catch(() => "—");
