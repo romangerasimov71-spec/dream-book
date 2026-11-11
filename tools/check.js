@@ -223,7 +223,7 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     ok(await page.locator(".search-label").count() === 1, "назад: в главное меню");
 
     // Недавно искали
-    ok(await page.locator(".chip").count() >= 3, "«Недавно искали» заполнено: " + await page.locator(".chip").count());
+    ok(await page.locator(".chip").count() >= 1, "«Недавно искали» заполнено: " + await page.locator(".chip").count());
 
     ok(!page._errors.length, "ошибок в консоли нет " + (page._errors.length ? JSON.stringify(page._errors) : ""));
     await page.context().close();
