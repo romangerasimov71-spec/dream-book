@@ -58,6 +58,7 @@ async function newPage(browser, vp, opts = {}) {
 }
 
 async function idOf(page, title) {
+  await page.waitForFunction(() => window.Sonnik && window.Sonnik.isReady && window.Sonnik.isReady(), null, { timeout: 15000 });
   return page.evaluate((t) => { const d = (window.DREAMS || []).find((x) => x.title === t); return d ? d.id : ""; }, title);
 }
 
@@ -451,6 +452,7 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
   {
     const page = await newPage(browser, { width: 390, height: 844 });
     await page.goto(BASE);
+    await page.waitForFunction(() => window.Sonnik && window.Sonnik.isReady());
     const r = await page.evaluate(() => {
       const f = (y, m, d, hh) => window.Sonnik.dreamOfDay(new Date(y, m, d, hh)).id;
       const week = []; for (let i = 0; i < 7; i++) week.push(f(2026, 10, 10 + i, 12));

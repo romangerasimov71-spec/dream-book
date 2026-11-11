@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="utf-8">
+  <script src="playgama-bridge.js"></script>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Сонник — что означает ваш сон</title>
   <meta name="description" content="Сонник: напишите, что вам приснилось, и прочитайте толкование. Сон дня, разделы, частые сны.">
@@ -30,6 +31,7 @@
     </header>
 
     <main id="app" tabindex="-1">
+      <p class="lead boot-note" id="bootNote">Открываем сонник…</p>
       <noscript><p class="lead">Чтобы открыть сонник, включите JavaScript в браузере.</p></noscript>
     </main>
 
@@ -42,8 +44,23 @@
   <div id="modalRoot"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="data/dreams.js"></script>
-  <script src="search.js"></script>
-  <script src="app.js"></script>
+  <script src="config.js"></script>
+  <script src="platform.js"></script>
+  <script src="analytics.js"></script>
+  <script>
+  /* Запуск: сначала площадка (Playgama Bridge), потом база снов и само приложение. */
+  (function () {
+    var files = ["data/dreams.js", "search.js", "app.js"];
+    function load(i) {
+      if (i >= files.length) return;
+      var s = document.createElement("script");
+      s.src = files[i];
+      s.onload = function () { load(i + 1); };
+      s.onerror = function () { var n = document.getElementById("bootNote"); if (n) n.textContent = "Не получилось загрузить сонник. Обновите страницу."; };
+      document.body.appendChild(s);
+    }
+    window.Platform.init({ timeoutMs: 8000, localPrefix: "" }).then(function () { load(0); }, function () { load(0); });
+  })();
+  </script>
 </body>
 </html>

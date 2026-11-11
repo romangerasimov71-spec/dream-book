@@ -3,6 +3,10 @@
   "use strict";
 
   var S = window.SonnikSearch;
+  var CFG = window.APP_CONFIG || {};
+  var PF = window.Platform || null;
+  var AN = window.Analytics || { event: function () {}, once: function () {}, ready: function () {}, init: function () {} };
+  var WEEK_DAYS = CFG.WEEK_DAYS || 7;
 
   /* ================= данные ================= */
 
@@ -90,7 +94,8 @@
     copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
     save: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 19h14"/>',
     bulb: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>',
-    star: '<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6-5.3-3-5.3 3 1.2-6-4.5-4.1 6-.7z"/>'
+    star: '<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6-5.3-3-5.3 3 1.2-6-4.5-4.1 6-.7z"/>',
+    calendar: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M15.5 13.2a2.3 2.3 0 1 0 1.5 4 1.9 1.9 0 0 1-1.5-4z"/>'
   };
 
   function icon(name) {
@@ -109,14 +114,15 @@
     return h("span", { class: "mood " + m.cls, text: m.label });
   }
 
-  function lsGet(key, fallback) {
-    try {
-      var v = window.localStorage.getItem(key);
-      return v == null ? fallback : JSON.parse(v);
-    } catch (e) { return fallback; }
-  }
-  function lsSet(key, value) {
-    try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (e) { /* приватный режим — не страшно */ }
+  /* Сохранённое: читаем один раз при запуске (Platform.load), дальше держим в памяти и
+     сохраняем изменённое через Platform.save (хранилище площадки, без неё — localStorage). */
+  var KEY_RECENT = "sonnik_recent", KEY_WEEK = "sonnik_week";
+  var store = {};
+  store[KEY_RECENT] = [];
+  store[KEY_WEEK] = null;
+  function saveKeys(obj) {
+    Object.keys(obj).forEach(function (k) { store[k] = obj[k]; });
+    if (PF) PF.save(obj);
   }
 
   function seeded(seed) {
@@ -143,12 +149,12 @@
   }
 
   var toastTimer;
-  function toast(msg) {
+  function toast(msg, ms) {
     var t = document.getElementById("toast");
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove("show"); }, 2600);
+    toastTimer = setTimeout(function () { t.classList.remove("show"); }, ms || 2600);
   }
 
   /* ================= сон дня ================= */
@@ -178,15 +184,16 @@
 
   /* ================= недавно искали ================= */
 
-  var RECENT_KEY = "sonnik.recent";
   function getRecent() {
-    var r = lsGet(RECENT_KEY, []);
+    var r = store[KEY_RECENT];
     return Array.isArray(r) ? r.filter(function (id) { return BY_ID[id]; }) : [];
   }
   function addRecent(id) {
-    var r = getRecent().filter(function (x) { return x !== id; });
+    var old = getRecent();
+    if (old[0] === id) return;           // уже первым — сохранять нечего
+    var r = old.filter(function (x) { return x !== id; });
     r.unshift(id);
-    lsSet(RECENT_KEY, r.slice(0, 8));
+    saveKeys((function () { var o = {}; o[KEY_RECENT] = r.slice(0, 8); return o; })());
   }
 
   /* ================= текст для «поделиться» ================= */
@@ -199,9 +206,10 @@
     return "Мне приснилось: " + d.title + ". " + sh + " — Сонник";
   }
 
+  // Ссылка на сон: адрес приложения в площадке (config.js APP_URL), без него — текущий адрес.
   function shareUrl(d) {
-    var base = location.href.split("#")[0].split("?")[0];
-    return base + "#dream=" + encodeURIComponent(d.id);
+    var base = PF ? PF.appUrl() : location.href.split("#")[0].split("?")[0];
+    return base.split("#")[0] + "#dream=" + encodeURIComponent(d.id);
   }
 
   /* ================= навигация ================= */
@@ -217,6 +225,7 @@
     if (key === "cat") return { name: "cat", cat: val };
     if (key === "q") return { name: "q", q: val.slice(0, MAX_Q) };
     if (key === "cats") return { name: "home", anchor: "cats" };
+    if (key === "week") return { name: "week" };
     return { name: "home" };
   }
 
@@ -244,10 +253,12 @@
   var lastHash = null;
   var firstRender = true;
   var alts = null; // {id, list} — «возможно, вы искали»
+  // Откуда человек пришёл на следующий экран (для статистики): ставится перед переходом.
+  var pendingSource = null;
 
   function render(force) {
     var hash = location.hash;
-    if (!force && hash === lastHash) return;
+    if (!force && hash === lastHash) { pendingSource = null; return; }
     lastHash = hash;
     var app = document.getElementById("app");
     var r = parseHash();
@@ -267,9 +278,15 @@
     }
     app.textContent = "";
     var focusEl = null;
-    if (r.name === "dream") focusEl = renderDream(app, r.id);
+    var src = pendingSource || (firstRender ? "link" : null);
+    pendingSource = null;
+    if (r.name === "dream") {
+      focusEl = renderDream(app, r.id);
+      if (src && BY_ID[r.id]) AN.event("dream_opened", { source: src, dream_id: r.id });
+    }
     else if (r.name === "cat") focusEl = renderCat(app, r.cat);
     else if (r.name === "q") focusEl = renderNotFound(app, r.q);
+    else if (r.name === "week") focusEl = renderWeek(app, src);
     else renderHome(app);
 
     if (r.anchor === "cats") {
@@ -280,7 +297,8 @@
       if (!firstRender && focusEl) focusEl.focus({ preventScroll: true });
       else if (!firstRender) app.focus({ preventScroll: true });
     }
-    document.title = r.name === "dream" && BY_ID[r.id] ? BY_ID[r.id].title + " — к чему снится | Сонник" : "Сонник — что означает ваш сон";
+    document.title = r.name === "dream" && BY_ID[r.id] ? BY_ID[r.id].title + " — к чему снится | Сонник"
+      : r.name === "week" ? "Мой сонник на неделю | Сонник" : "Сонник — что означает ваш сон";
     firstRender = false;
   }
 
@@ -351,6 +369,8 @@
     function pick(d) {
       close();
       alts = null;
+      AN.event("search", { found: "yes", method: "suggest" });
+      pendingSource = "search";
       navigate("dream=" + encodeURIComponent(d.id));
     }
     function submit() {
@@ -368,9 +388,16 @@
         var best = strong[0];
         var others = strong.slice(1).filter(function (r) { return r.score >= best.score - 15; }).slice(0, 3).map(function (r) { return r.d.id; });
         alts = others.length ? { id: best.d.id, list: others } : null;
+        AN.event("search", { found: "yes", method: "enter" });
+        pendingSource = "search";
         navigate("dream=" + encodeURIComponent(best.d.id));
       } else {
         // Только «похоже» или ничего — экран с вариантами на выбор.
+        var found = S.search(INDEX, q).length ? "choice" : "no";
+        var ev = { found: found, method: "enter" };
+        // Чего не хватает в базе: сам запрос — только одно слово из строчных русских букв, 3–20.
+        if (found === "no" && /^[а-яё]{3,20}$/.test(q)) ev.query = q;
+        AN.event("search", ev);
         navigate("q=" + encodeURIComponent(q));
       }
     }
@@ -401,8 +428,8 @@
 
   /* ================= экраны ================= */
 
-  function dreamLink(d, withShort) {
-    return h("a", { class: "item", href: "#dream=" + encodeURIComponent(d.id) }, [
+  function dreamLink(d, withShort, src) {
+    return h("a", { class: "item", href: "#dream=" + encodeURIComponent(d.id), "data-src": src || null }, [
       h("span", { class: "item-title" }, [h("span", { text: d.title })]),
       withShort && d.short ? h("span", { class: "item-short", text: d.short }) : null
     ]);
@@ -425,19 +452,21 @@
       app.appendChild(h("section", { class: "recent", "aria-label": "Недавно смотрели" }, [
         h("p", { class: "recent-title", text: "Недавно смотрели:" }),
         h("div", { class: "chips" }, recent.map(function (id) {
-          return h("a", { class: "chip", href: "#dream=" + encodeURIComponent(id), text: BY_ID[id].title });
+          return h("a", { class: "chip", href: "#dream=" + encodeURIComponent(id), "data-src": "recent", text: BY_ID[id].title });
         }))
       ]));
     }
 
     app.appendChild(todayCard());
+    var inv = weekInvite("home");
+    if (inv) app.appendChild(inv);
 
     var counts = {};
     DREAMS.forEach(function (d) { counts[d.cat] = (counts[d.cat] || 0) + 1; });
     app.appendChild(h("h2", { class: "section-title", id: "cats", tabindex: "-1", text: "Разделы сонника" }));
     app.appendChild(h("nav", { class: "cats", "aria-label": "Разделы" }, CATS.map(function (c) {
       var n = counts[c] || 0;
-      return h("a", { class: "cat", href: "#cat=" + encodeURIComponent(c) }, [
+      return h("a", { class: "cat", href: "#cat=" + encodeURIComponent(c), "data-search": "category" }, [
         catIcon(c),
         h("span", null, [
           h("span", { class: "cat-name", text: c }),
@@ -456,8 +485,190 @@
     card.appendChild(h("h2", { id: "todayTitle", text: d.title }));
     card.appendChild(moodBadge(d.mood));
     card.appendChild(h("p", { text: d.short }));
-    card.appendChild(h("a", { class: "btn btn-primary btn-wide", href: "#dream=" + encodeURIComponent(d.id) }, "Читать толкование"));
+    card.appendChild(h("a", { class: "btn btn-primary btn-wide", href: "#dream=" + encodeURIComponent(d.id), "data-src": "day" }, "Читать толкование"));
     return card;
+  }
+
+  /* ================= «Мой сонник на неделю» (за рекламу) ================= */
+
+  // Открыт ли сонник на неделю: день открытия хранится в sonnik_week.from (номер дня).
+  // Держится WEEK_DAYS дней, включая день открытия. Вчерашний «завтрашний» день (смена
+  // часового пояса) тоже считаем: разница -1 допустима.
+  function weekState(date) {
+    var w = store[KEY_WEEK];
+    var from = w && typeof w.from === "number" ? w.from : null;
+    if (from == null) return { open: false };
+    var diff = dayNumber(date || new Date()) - from;
+    if (diff < -1 || diff >= WEEK_DAYS) return { open: false, expired: diff >= WEEK_DAYS };
+    return { open: true, from: from, left: WEEK_DAYS - Math.max(diff, 0) };
+  }
+  function weekUntilLabel(date) {
+    var st = weekState(date);
+    if (!st.open) return "";
+    var now = date || new Date();
+    return dateLabel(new Date(now.getFullYear(), now.getMonth(), now.getDate() + st.left - 1));
+  }
+  // 7 снов дня вперёд — тем же правилом, что «сон дня»: на завтра … +7 дней.
+  function weekDreams(date) {
+    var now = date || new Date(), out = [];
+    for (var i = 1; i <= 7; i++) {
+      var day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, 12);
+      out.push({ date: day, dream: dreamOfDay(day) });
+    }
+    return out;
+  }
+  function weekAvailable() { return weekState().open || !!(PF && PF.rewardedAvailable()); }
+
+  // Приглашение (на главной под «Сном дня» и на экране сна дня).
+  function weekInvite(src) {
+    if (!DREAMS.length || !weekAvailable()) return null;
+    var st = weekState();
+    return h("section", { class: "card week-invite", id: src === "home" ? "weekInvite" : null, "aria-labelledby": "weekInvTitle-" + src }, [
+      h("div", { class: "week-invite-head" }, [icon("calendar"), h("h2", { id: "weekInvTitle-" + src, text: "Мой сонник на неделю" })]),
+      h("p", { text: st.open
+        ? "Открыт до " + weekUntilLabel() + " включительно: сны дня на 7 дней вперёд с советом на каждый день."
+        : "Сны дня на 7 дней вперёд — с коротким советом на каждый день." }),
+      h("a", { class: "btn btn-wide" + (st.open ? " btn-primary" : ""), href: "#week", "data-src": src }, st.open ? "Смотреть мою неделю" : "Узнать, что ждёт на неделе")
+    ]);
+  }
+
+  var weekNotice = null;   // {kind: 'ok'|'fail', text} — показать на экране недели один раз
+  var adGrants = 0;        // сколько раз за этот запуск выдана награда (для автотеста)
+  var adBusy = false;
+  var weekSrc = "link";    // откуда пришли к предложению недели (home / day / link)
+
+  var AD_FAIL_TEXT = {
+    closed: "Реклама закрыта раньше конца — неделя не открылась. Можно попробовать ещё раз.",
+    error: "Реклама сейчас недоступна. Попробуйте чуть позже.",
+    timeout: "Реклама не загрузилась. Попробуйте чуть позже.",
+    late: "Реклама пришла слишком поздно, поэтому неделя не открылась. Попробуйте ещё раз."
+  };
+
+  function renderWeek(app, src) {
+    app.appendChild(backButton());
+    var st = weekState();
+    var t = h("h1", { tabindex: "-1", text: "Мой сонник на неделю" });
+    var notice = null;
+    if (weekNotice) {
+      notice = h("p", { class: "notice notice-" + weekNotice.kind, role: "status", text: weekNotice.text });
+      weekNotice = null;
+    }
+    if (st.open) {
+      app.appendChild(h("div", { class: "card week-head" }, [t,
+        h("p", { class: "lead", text: "Открыт до " + weekUntilLabel() + " включительно. Каждый день здесь — сны дня на 7 дней вперёд." })]));
+      if (notice) app.appendChild(notice);
+      var today = new Date();
+      app.appendChild(h("ol", { class: "week-list" }, weekDreams(today).map(function (x, i) {
+        var d = x.dream;
+        if (!d) return null;
+        return h("li", { class: "card week-day" }, [
+          h("p", { class: "week-date", text: (i === 0 ? "Завтра, " : weekdayLabel(x.date) + ", ") + dateLabel(x.date) }),
+          h("a", { class: "week-title", href: "#dream=" + encodeURIComponent(d.id), "data-src": "week" }, d.title),
+          moodBadge(d.mood),
+          d.tip ? h("p", { class: "week-tip" }, [h("b", { text: "Совет: " }), d.tip]) : null
+        ]);
+      })));
+      app.appendChild(h("p", { style: "margin:18px 0" }, h("a", { class: "btn btn-wide", href: "#" }, "На главную")));
+      return t;
+    }
+    var available = PF && PF.rewardedAvailable();
+    var adBtn = h("button", { type: "button", class: "btn btn-primary btn-wide", id: "weekAdBtn" }, available ? "Смотреть рекламу и открыть" : "Пока недоступно");
+    if (!available) adBtn.disabled = true;
+    if (src && src !== "rerender") weekSrc = src;
+    adBtn.addEventListener("click", function () { startWeekAd(weekSrc); });
+    app.appendChild(h("div", { class: "card week-head" }, [t,
+      h("p", { class: "lead", text: "Сны дня на 7 дней вперёд — с коротким советом на каждый день." }),
+      h("ul", { class: "week-points" }, [
+        h("li", { text: "Посмотрите короткую рекламу — неделя откроется сразу." }),
+        h("li", { text: "Открывается на " + WEEK_DAYS + " дней, потом можно открыть снова." }),
+        h("li", { text: "Толкования снов всегда бесплатны — реклама нужна только для недели." })
+      ])
+    ]));
+    if (notice) app.appendChild(notice);
+    app.appendChild(h("div", { class: "actions" }, [adBtn, h("a", { class: "btn btn-wide", href: "#" }, "На главную")]));
+    if (available && src && src !== "rerender") AN.event("week_offer_shown", { source: src });
+    return t;
+  }
+
+  function weekdayLabel(date) {
+    try {
+      var s = date.toLocaleDateString("ru-RU", { weekday: "long" });
+      return s.charAt(0).toLocaleUpperCase("ru") + s.slice(1);
+    } catch (e) { return ""; }
+  }
+
+  // Окно «ждём рекламу»: всё остальное не нажимается, есть «Отмена».
+  function adWaitOverlay() {
+    var cancel = h("button", { type: "button", class: "btn btn-wide" }, "Отмена");
+    var box = h("div", { class: "ad-wait", role: "dialog", "aria-modal": "true", "aria-label": "Загружаем рекламу" }, [
+      h("div", { class: "ad-wait-box" }, [
+        h("div", { class: "spinner", "aria-hidden": "true" }),
+        h("p", { role: "status", text: "Загружаем рекламу…" }),
+        cancel
+      ])
+    ]);
+    cancel.addEventListener("click", function () { if (PF) PF.cancelRewarded(); });
+    function trap(e) { if (e.key === "Escape") { e.preventDefault(); if (PF) PF.cancelRewarded(); } }
+    document.addEventListener("keydown", trap, true);
+    document.body.appendChild(box);
+    document.body.classList.add("is-ad-wait");
+    var main = document.querySelector(".wrap");
+    if (main) main.setAttribute("inert", "");
+    cancel.focus();
+    return function () {
+      document.removeEventListener("keydown", trap, true);
+      box.remove();
+      document.body.classList.remove("is-ad-wait");
+      if (main) main.removeAttribute("inert");
+    };
+  }
+
+  function startWeekAd(src) {
+    if (adBusy || !PF || weekState().open) return;
+    adBusy = true;
+    if (PF.banner) PF.banner.hide();
+    var done = adWaitOverlay();
+    PF.showRewarded({
+      placement: "week",
+      onLate: function () {
+        AN.event("ad_reward_failed", { reason: "late" });
+        weekNotice = { kind: "fail", text: AD_FAIL_TEXT.late };
+        toast(AD_FAIL_TEXT.late, 5000);
+        if (parseHash().name === "week") { pendingSource = "rerender"; render(true); }
+      }
+    }).then(function (res) {
+      done();
+      adBusy = false;
+      if (PF.banner && !modal) PF.banner.show();
+      if (res && res.ok) {
+        adGrants++;
+        var o = {}; o[KEY_WEEK] = { from: dayNumber(new Date()) };
+        saveKeys(o);
+        AN.event("week_unlocked", { source: src });
+        weekNotice = { kind: "ok", text: "Готово! Сонник на неделю открыт до " + weekUntilLabel() + " включительно." };
+        refreshInvite();
+        pendingSource = "rerender";
+        if (parseHash().name === "week") render(true); else navigate("week");
+        return;
+      }
+      var reason = res && AD_FAIL_TEXT[res.reason] ? res.reason : "error";
+      AN.event("ad_reward_failed", { reason: reason });
+      weekNotice = { kind: "fail", text: AD_FAIL_TEXT[reason] };
+      toast(AD_FAIL_TEXT[reason], 4500);
+      if (parseHash().name === "week") {
+        pendingSource = "rerender";
+        render(true);
+        var b = document.getElementById("weekAdBtn");
+        if (b) b.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  function refreshInvite() {
+    var old = document.getElementById("weekInvite");
+    if (!old) return;
+    var inv = weekInvite("home");
+    if (inv) old.parentNode.replaceChild(inv, old); else old.remove();
   }
 
   function renderDream(app, id) {
@@ -494,7 +705,7 @@
         app.appendChild(h("div", { class: "also" }, [
           h("p", { text: "Возможно, вы искали:" }),
           h("div", { class: "chips" }, links.map(function (x) {
-            return h("a", { class: "chip", href: "#dream=" + encodeURIComponent(x), text: BY_ID[x].title });
+            return h("a", { class: "chip", href: "#dream=" + encodeURIComponent(x), "data-src": "search", text: BY_ID[x].title });
           }))
         ]));
       }
@@ -511,6 +722,13 @@
 
     if (d.tip) {
       app.appendChild(h("div", { class: "card tip" }, [icon("bulb"), h("div", null, [h("b", { text: "Совет на день" }), h("p", { text: d.tip })])]));
+    }
+
+    // Экран сна дня — приглашение в «Мой сонник на неделю».
+    var tod = dreamOfDay(new Date());
+    if (tod && tod.id === d.id) {
+      var inv = weekInvite("day");
+      if (inv) app.appendChild(inv);
     }
 
     var shareBtn = h("button", { type: "button", class: "btn btn-primary btn-wide" }, [icon("share"), "Поделиться"]);
@@ -533,7 +751,7 @@
     if (sim.length) {
       app.appendChild(h("section", { class: "similar" }, [
         h("h2", { class: "section-title", text: "Похожие сны" }),
-        h("ul", { class: "list" }, sim.map(function (x) { return h("li", null, dreamLink(x, true)); }))
+        h("ul", { class: "list" }, sim.map(function (x) { return h("li", null, dreamLink(x, true, "similar")); }))
       ]));
     }
     return title;
@@ -573,6 +791,7 @@
     var d;
     do { d = DREAMS[Math.floor(Math.random() * DREAMS.length)]; } while (d.id === currentId);
     alts = null;
+    pendingSource = "random";
     navigate("dream=" + encodeURIComponent(d.id), true); // заменяем запись: «назад» не копит случайные сны
   }
 
@@ -586,7 +805,7 @@
       app.appendChild(h("p", { class: "lead", text: "В этом разделе снов пока нет — скоро добавим." }));
     } else {
       app.appendChild(h("p", { class: "lead", text: list.length + " " + plural(list.length, "сон", "сна", "снов") + " — выберите, чтобы прочитать толкование." }));
-      app.appendChild(h("ul", { class: "list" }, list.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+      app.appendChild(h("ul", { class: "list" }, list.map(function (d) { return h("li", null, dreamLink(d, true, "category")); })));
     }
     return t;
   }
@@ -603,7 +822,7 @@
         h("p", { class: "lead" }, ["Вы искали: ", h("span", { class: "query", text: "«" + q + "»" })])
       ]));
       app.appendChild(h("h2", { class: "section-title", text: "Может быть, вы имели в виду:" }));
-      app.appendChild(h("ul", { class: "list" }, maybe.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+      app.appendChild(h("ul", { class: "list" }, maybe.map(function (d) { return h("li", null, dreamLink(d, true, "search")); })));
     } else {
       t = h("h1", { tabindex: "-1", text: "Такого сна пока нет в соннике" });
       app.appendChild(h("div", { class: "card empty" }, [
@@ -614,14 +833,14 @@
       var sim = S.similar(INDEX, q, 5);
       if (sim.length) {
         app.appendChild(h("h2", { class: "section-title", text: "Похоже по написанию:" }));
-        app.appendChild(h("ul", { class: "list" }, sim.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+        app.appendChild(h("ul", { class: "list" }, sim.map(function (d) { return h("li", null, dreamLink(d, true, "search")); })));
       }
       if (sim.length < 3) {
         var extra = [], cand = [dreamOfDay(new Date())].concat(similarInCat(dreamOfDay(new Date()) || DREAMS[0] || {}, 4));
         cand.forEach(function (d) { if (d && d.id && sim.indexOf(d) < 0 && extra.indexOf(d) < 0 && extra.length < 3) extra.push(d); });
         if (extra.length) {
           app.appendChild(h("h2", { class: "section-title", text: "Почитайте другие сны:" }));
-          app.appendChild(h("ul", { class: "list" }, extra.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+          app.appendChild(h("ul", { class: "list" }, extra.map(function (d) { return h("li", null, dreamLink(d, true, "search")); })));
         }
       }
     }
@@ -641,10 +860,11 @@
     );
   }
 
-  function openModal(titleText, body, opener) {
+  function openModal(titleText, body, opener, extraClass) {
     if (modal) {
       // Меняем содержимое уже открытого окна, история не трогается.
       var box = modal.overlay.querySelector(".modal");
+      box.className = "modal" + (extraClass ? " " + extraClass : "");
       box.querySelector("h2").textContent = titleText;
       var old = box.querySelector(".modal-body");
       box.replaceChild(body, old);
@@ -655,7 +875,7 @@
     }
     body.classList.add("modal-body");
     var closeBtn = h("button", { type: "button", class: "close", "aria-label": "Закрыть" }, icon("close"));
-    var box2 = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "modalTitle" }, [
+    var box2 = h("div", { class: "modal" + (extraClass ? " " + extraClass : ""), role: "dialog", "aria-modal": "true", "aria-labelledby": "modalTitle" }, [
       h("div", { class: "modal-head" }, [h("h2", { id: "modalTitle", text: titleText }), closeBtn]),
       body
     ]);
@@ -675,6 +895,8 @@
     document.addEventListener("keydown", onKey);
     document.getElementById("modalRoot").appendChild(overlay);
     document.body.style.overflow = "hidden";
+    // Баннер не мешает окнам: пока окно открыто, баннера нет.
+    if (PF && PF.banner) PF.banner.hide();
     modal = { overlay: overlay, opener: opener, onKey: onKey, url: null };
     try { history.pushState({ depth: depth(), modal: true }, "", location.href); } catch (e) { /* без истории тоже работает */ }
     var first = focusables(body)[0] || closeBtn;
@@ -688,6 +910,7 @@
     document.removeEventListener("keydown", m.onKey);
     m.overlay.remove();
     document.body.style.overflow = "";
+    if (PF && PF.banner && !adBusy) PF.banner.show();
     if (m.url) { try { URL.revokeObjectURL(m.url); } catch (e) { /* ничего */ } }
     if (m.opener && document.contains(m.opener)) m.opener.focus();
     if (!fromHistory && history.state && history.state.modal) history.back();
@@ -747,9 +970,11 @@
 
   // Решение Романа 11 ноя: на компьютере всегда наше окно (в системном меню
   // ВК и ОК обычно нет); на телефоне и планшете — системное меню, если оно есть.
+  // В ВК и ОК — всегда наше окно: первая кнопка там — «поделиться» самой площадки.
   function share(d, opener) {
     var text = shareText(d), url = shareUrl(d);
-    if (navigator.share && !isDesktop()) {
+    if (navigator.share && !isDesktop() && !(PF && PF.nativeShareChannel())) {
+      AN.event("share_clicked", { channel: "system", dream_id: d.id });
       navigator.share({ title: "Сонник: " + d.title, text: text, url: url }).catch(function (e) {
         if (e && e.name === "AbortError") return;
         openShareModal(d, opener);
@@ -764,27 +989,43 @@
     var vk = "https://vk.com/share.php?url=" + encodeURIComponent(url) + "&title=" + encodeURIComponent(text);
     var ok = "https://connect.ok.ru/offer?url=" + encodeURIComponent(url) +
       "&title=" + encodeURIComponent("Сонник: " + d.title) + "&description=" + encodeURIComponent(text);
+    var native = PF ? PF.nativeShareChannel() : "";
+    var links = !PF || PF.externalLinksAllowed();
+    var mark = function (ch) { return function () { AN.event("share_clicked", { channel: ch, dream_id: d.id }); }; };
+    // Своя площадка — её окном «поделиться»; другая сеть — ссылкой, если площадка разрешает ссылки.
+    function netButton(ch, cls, label, href) {
+      if (native === ch) {
+        var b = h("button", { type: "button", class: "btn " + cls + " btn-wide" }, label);
+        b.addEventListener("click", function () {
+          mark(ch)();
+          PF.shareNative({ text: text, url: url }).catch(function () { /* закрыли окно площадки — ничего */ });
+        });
+        return b;
+      }
+      if (!links) return null;
+      return h("a", { class: "btn " + cls + " btn-wide", href: href, target: "_blank", rel: "noopener", onclick: mark(ch) }, label);
+    }
     var copyBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("copy"), "Скопировать текст"]);
     copyBtn.addEventListener("click", function () {
+      mark("copy")();
       copyText(text + "\n" + url).then(function (okk) {
         toast(okk ? "Текст скопирован — вставьте его в сообщение" : "Не получилось скопировать");
       });
     });
     var cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка со сном"]);
     cardBtn.addEventListener("click", function () { openPostcard(d, opener); });
+    var vkBtn = netButton("vk", "btn-vk", native === "vk" ? "Поделиться ВКонтакте" : "ВКонтакте", vk);
+    var okBtn = netButton("ok", "btn-ok", native === "ok" ? "Поделиться в Одноклассниках" : "Одноклассники", ok);
+    var nets = native === "ok" ? [okBtn, vkBtn] : [vkBtn, okBtn];
     var parts = [
       h("p", { class: "share-preview", text: text + " " + url }),
-      h("div", { class: "stack" }, [
-        h("a", { class: "btn btn-vk btn-wide", href: vk, target: "_blank", rel: "noopener" }, "ВКонтакте"),
-        h("a", { class: "btn btn-ok btn-wide", href: ok, target: "_blank", rel: "noopener" }, "Одноклассники"),
-        copyBtn,
-        cardBtn
-      ])
+      h("div", { class: "stack" }, nets.concat([copyBtn, cardBtn]))
     ];
-    // На компьютере системное меню — маленькой второстепенной кнопкой.
-    if (navigator.share && isDesktop()) {
+    // На компьютере (и в ВК/ОК) системное меню — маленькой второстепенной кнопкой.
+    if (navigator.share && (isDesktop() || native)) {
       var other = h("button", { type: "button", class: "link-btn share-other" }, "Другие приложения…");
       other.addEventListener("click", function () {
+        mark("system")();
         navigator.share({ title: "Сонник: " + d.title, text: text, url: url }).catch(function () { /* закрыли меню — ничего */ });
       });
       parts.push(h("p", { class: "share-other-wrap" }, other));
@@ -794,20 +1035,7 @@
   }
 
   function copyText(str) {
-    if (navigator.clipboard && window.isSecureContext) {
-      return navigator.clipboard.writeText(str).then(function () { return true; }, function () { return legacyCopy(str); });
-    }
-    return Promise.resolve(legacyCopy(str));
-  }
-  function legacyCopy(str) {
-    var ta = h("textarea", { readonly: true, style: "position:fixed;top:0;left:0;opacity:0;font-size:16px" });
-    ta.value = str;
-    document.body.appendChild(ta);
-    ta.select();
-    var ok = false;
-    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
-    ta.remove();
-    return ok;
+    return PF ? PF.copyText(str) : Promise.resolve(false);
   }
 
   /* ================= открытка ================= */
@@ -904,7 +1132,8 @@
     ctx.closePath();
   }
 
-  function openPostcard(d, opener) {
+  function openPostcard(d, opener, again) {
+    if (!again) AN.event("share_clicked", { channel: "postcard", dream_id: d.id });
     var canvas = makePostcard(d);
     var img = h("img", { class: "postcard-img", alt: "Открытка: " + d.title + ". " + d.short, width: "360", height: "360" });
     var fileName = "sonnik-" + d.id + ".png";
@@ -929,6 +1158,7 @@
             var sendBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("share"), "Отправить открытку"]);
             sendBtn.addEventListener("click", function () {
               navigator.share({ files: [file], title: "Сонник: " + d.title, text: shareText(d) + " " + shareUrl(d) })
+                .then(function () { AN.event("postcard_saved", { method: "share_file", dream_id: d.id }); })
                 .catch(function () { /* человек передумал */ });
             });
             stack.appendChild(sendBtn);
@@ -939,12 +1169,31 @@
     try { canvas.toBlob(ready, "image/png"); } catch (e) { ready(null); }
 
     saveBtn.addEventListener("click", function () {
+      // Во ВК и ОК приложение открыто внутри площадки, и скачивание файла там часто не работает:
+      // показываем открытку на весь экран, чтобы сохранить её как обычную картинку.
+      if (PF && PF.isSocial) {
+        AN.event("postcard_saved", { method: "fullscreen", dream_id: d.id });
+        showPostcardFull(d, canvas, opener);
+        return;
+      }
       var a = h("a", { href: blobUrl || canvas.toDataURL("image/png"), download: fileName, style: "display:none" });
       document.body.appendChild(a);
       a.click();
       a.remove();
+      AN.event("postcard_saved", { method: "download", dream_id: d.id });
       toast("Открытка сохраняется в загрузки");
     });
+  }
+
+  function showPostcardFull(d, canvas, opener) {
+    var img = h("img", { class: "postcard-full-img", alt: "Открытка: " + d.title + ". " + d.short });
+    img.src = canvas.toDataURL("image/png");
+    var hint = isDesktop()
+      ? "Нажмите на открытку правой кнопкой мыши и выберите «Сохранить изображение как…»."
+      : "Нажмите на открытку и удерживайте палец, чтобы сохранить её.";
+    var back = h("button", { type: "button", class: "btn btn-wide" }, [icon("back"), "Назад к открытке"]);
+    back.addEventListener("click", function () { openPostcard(d, opener, true); });
+    openModal("Сохранить открытку", h("div", { class: "postcard-full" }, [img, h("p", { class: "note postcard-full-hint", text: hint }), back]), opener, "modal-full");
   }
 
   /* ================= звёздное небо ================= */
@@ -991,9 +1240,15 @@
     shownDay = n;
     var old = document.getElementById("today");
     if (old) old.parentNode.replaceChild(todayCard(), old);
+    refreshInvite();
   }
 
   function start() {
+    // Ссылка из площадки: во ВК всё после # в адресе приложения приходит как payload.
+    var pl = PF && PF.payload;
+    if (!location.hash && typeof pl === "string" && /^(dream|cat|q|week)(=|$)/.test(pl)) {
+      try { history.replaceState(null, "", location.href.split("#")[0] + "#" + pl); } catch (e) { /* ничего */ }
+    }
     try { history.replaceState({ depth: 0 }, "", location.href); } catch (e) { /* file:// в старых браузерах */ }
 
     document.addEventListener("click", function (e) {
@@ -1002,6 +1257,8 @@
       if (!a) return;
       e.preventDefault();
       if (modal) closeModal(true);
+      if (a.getAttribute("data-src")) pendingSource = a.getAttribute("data-src");
+      if (a.getAttribute("data-search") === "category") AN.event("search", { found: "yes", method: "category" });
       navigate(a.getAttribute("href").slice(1));
     });
 
@@ -1023,12 +1280,33 @@
 
     drawSky();
     watchButtons();
-    render(true);
-    scheduleMidnight();
+    AN.init(PF && PF.hasBridge ? PF.bridge : null, { appVersion: CFG.version || "" });
+    var load = PF ? PF.load([KEY_RECENT, KEY_WEEK]) : Promise.resolve({});
+    load.then(function (data) {
+      if (data && Array.isArray(data[KEY_RECENT])) store[KEY_RECENT] = data[KEY_RECENT].map(String).slice(0, 8);
+      if (data && data[KEY_WEEK] && typeof data[KEY_WEEK] === "object") store[KEY_WEEK] = data[KEY_WEEK];
+    }, function () { /* без сохранённого */ }).then(function () {
+      var entry = parseHash().name;
+      var returning = getRecent().length > 0 || !!store[KEY_WEEK];
+      render(true);
+      scheduleMidnight();
+      if (PF && PF.banner) PF.banner.show();
+      if (PF) PF.gameReady();
+      AN.ready();
+      AN.event("app_opened", { entry: entry, returning: returning });
+      ready = true;
+    });
   }
+  var ready = false;
 
   // Для автотеста.
-  window.Sonnik = { isDesktop: isDesktop, dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, count: DREAMS.length };
+  window.Sonnik = {
+    isDesktop: isDesktop, dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, count: DREAMS.length,
+    weekDreams: weekDreams, weekState: weekState,
+    isReady: function () { return ready; },
+    adGrants: function () { return adGrants; },
+    adBusy: function () { return adBusy; }
+  };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
