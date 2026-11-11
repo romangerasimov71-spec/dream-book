@@ -97,7 +97,8 @@ a { color: var(--gold-hi); }
 main:focus { outline: none; }
 
 /* ---------- общие блоки ---------- */
-h1, h2, h3 { line-height: 1.25; margin: 0; overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; }
+/* Слова в заголовках не рвём; перенос внутри слова — только если оно само не влезает в строку. */
+h1, h2, h3 { line-height: 1.25; margin: 0; overflow-wrap: break-word; word-break: normal; -webkit-hyphens: manual; hyphens: manual; }
 h1:focus, h2:focus { outline: none; }
 
 .card {
@@ -138,7 +139,11 @@ h1:focus, h2:focus { outline: none; }
   text-decoration: none;
   text-align: center;
   min-width: 0;
-  overflow-wrap: anywhere;
+  /* На кнопках слова никогда не рвутся посередине (решение Романа 11 ноя). */
+  overflow-wrap: normal;
+  word-break: normal;
+  -webkit-hyphens: none;
+  hyphens: none;
   cursor: pointer;
   touch-action: manipulation;
   transition: background-color .15s, transform .1s;
@@ -160,6 +165,11 @@ h1:focus, h2:focus { outline: none; }
   gap: 12px;
   margin-top: 12px;
 }
+.btn-row .btn { padding-left: 12px; padding-right: 12px; gap: 8px; }
+/* Подпись не влезла в половину ширины — app.js ставит кнопки ряда в одну колонку. */
+.btn-row.one-col, .modal .stack.one-col { grid-template-columns: 1fr; }
+/* Крайний случай (очень узко и очень крупно): ужимаем поля кнопки. */
+.btn.btn-tight, .modal .stack .btn.btn-tight { padding-left: 8px; padding-right: 8px; gap: 6px; }
 
 .back-link {
   display: inline-flex;
@@ -329,7 +339,7 @@ h1:focus, h2:focus { outline: none; }
 }
 .cat-ico svg { width: 28px; height: 28px; }
 .cat > span:last-child { min-width: 0; max-width: 100%; }
-.cat-name { display: block; font-weight: 600; font-size: 1.0625rem; overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; }
+.cat-name { display: block; font-weight: 600; font-size: 1.0625rem; overflow-wrap: break-word; word-break: normal; -webkit-hyphens: manual; hyphens: manual; }
 .cat-count { display: block; color: var(--muted); font-size: 1rem; margin-top: 2px; }
 
 /* ---------- списки снов ---------- */
@@ -524,6 +534,20 @@ h1:focus, h2:focus { outline: none; }
   aspect-ratio: 1 / 1;
   background: #0d1740;
 }
+.share-other-wrap { margin: 10px 0 0; text-align: center; }
+.link-btn {
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 1rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.link-btn:hover { color: var(--text); }
 .modal .note { color: var(--muted); font-size: 1rem; margin: 10px 0 0; text-align: center; }
 
 .toast {

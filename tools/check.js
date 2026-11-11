@@ -99,6 +99,35 @@ async function layoutChecks(page, label) {
   ok(!r.cut.length, label + ": ничего не обрезано " + (r.cut.length ? JSON.stringify(r.cut.slice(0, 5)) : ""));
 }
 
+// Разорванные слова: у целого слова один прямоугольник (Range.getClientRects).
+// Кнопки — строго; заголовки — только если слово само шире строки.
+async function brokenWords(page) {
+  return page.evaluate(() => {
+    const out = [];
+    const check = (el, strict) => {
+      if (el.offsetParent === null && getComputedStyle(el).position !== "fixed") return;
+      const cs = getComputedStyle(el);
+      const lineW = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      let n;
+      while ((n = walker.nextNode())) {
+        const re = /\S+/g; let m;
+        while ((m = re.exec(n.data))) {
+          const r = document.createRange();
+          r.setStart(n, m.index); r.setEnd(n, m.index + m[0].length);
+          const rects = [...r.getClientRects()].filter((x) => x.width > 0.5);
+          if (rects.length <= 1) continue;
+          const w = rects.reduce((a, x) => a + x.width, 0);
+          if (strict || w <= lineW + 1) out.push(el.tagName + "." + el.className + " «" + m[0] + "»");
+        }
+      }
+    };
+    document.querySelectorAll(".btn, .link-btn, .chip").forEach((el) => check(el, true));
+    document.querySelectorAll("h1, h2, h3, .cat-name").forEach((el) => check(el, false));
+    return out;
+  });
+}
+
 // Только ширина страницы (для серии экранов).
 async function noSideScroll(page, label) {
   const r = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, w: window.innerWidth }));
@@ -216,7 +245,7 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     ok((await page.locator("main h1").textContent()) === "Змея", "после закрытия окна остались на сне");
 
     // Открытка
-    await page.locator("button", { hasText: "Открытка со сном" }).click();
+    await page.locator(".actions button", { hasText: "Открытка" }).click();
     await page.waitForFunction(() => { const i = document.querySelector(".postcard-img"); return i && i.complete && i.naturalWidth === 1080; });
     ok(true, "открытка нарисована 1080×1080");
     await shot(page, sc.name + "-6-postcard");
@@ -294,6 +323,48 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     await page.context().close();
   }
 
+  // Слова на кнопках не рвутся посередине (правка Романа 11 ноя, iPhone)
+  console.log("\nСлова на кнопках:");
+  {
+    const { devices } = require("playwright");
+    const variants = [{ name: "iPhone 13", dev: devices["iPhone 13"] }];
+    for (const w of [390, 375, 360, 320]) variants.push({ name: w + "px", vp: { width: w, height: 740 } });
+    for (const v of variants) {
+      for (const big of [false, true]) {
+        const ctx = v.dev
+          ? await browser.newContext({ ...v.dev, locale: "ru-RU" })
+          : await browser.newContext({ viewport: v.vp, deviceScaleFactor: 1, hasTouch: true, locale: "ru-RU" });
+        await ctx.addInitScript(() => { try { delete Navigator.prototype.share; delete Navigator.prototype.canShare; } catch (e) {} });
+        if (big) await ctx.addInitScript(() => document.addEventListener("DOMContentLoaded", () => {
+          const st = document.createElement("style"); st.textContent = "html{font-size:36px !important}"; document.head.appendChild(st);
+        }));
+        const page = await ctx.newPage();
+        const label = v.name + (big ? " шрифт 200%" : "");
+        const bad = [], cut = [];
+        const look = async () => {
+          await page.waitForTimeout(80);
+          bad.push(...await brokenWords(page));
+          cut.push(...await page.evaluate(() => [...document.querySelectorAll(".btn")].filter((el) => el.offsetParent !== null && el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.trim())));
+        };
+        await page.goto(BASE); await page.waitForSelector(".cat"); await look();
+        for (const id of [longId, await idOf(page, "Змея")]) {
+          await page.goto(BASE + "#dream=" + id); await page.reload(); await page.waitForSelector("main h1"); await look();
+        }
+        await page.locator(".btn-share-top").click(); await page.waitForSelector(".modal"); await look();
+        await page.locator(".modal button", { hasText: "Открытка со сном" }).click(); await page.waitForTimeout(150); await look();
+        await page.keyboard.press("Escape");
+        await page.goto(BASE + "#q=абракадабра"); await page.reload(); await page.waitForSelector("main h1"); await look();
+        ok(!bad.length, label + ": ни одно слово на кнопках и в заголовках не разорвано " + (bad.length ? JSON.stringify([...new Set(bad)].slice(0, 6)) : ""));
+        ok(!cut.length, label + ": подписи кнопок не вылезают " + (cut.length ? JSON.stringify([...new Set(cut)].slice(0, 6)) : ""));
+        if (!big && v.name === "iPhone 13") {
+          await page.goto(BASE + "#dream=" + longId); await page.reload(); await page.waitForSelector("main h1"); await page.waitForTimeout(80);
+          await shot(page, "words-iphone13-dream");
+        }
+        await ctx.close();
+      }
+    }
+  }
+
   // Альбом: окно «Поделиться» помещается, крестик не налезает
   console.log("\nАльбом, окна:");
   for (const vp of [{ width: 640, height: 360 }, { width: 844, height: 390 }]) {
@@ -316,6 +387,48 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     ok(pc, vp.width + "×" + vp.height + ": окно открытки помещается");
     await shot(page, "land-" + vp.width + "-postcard");
     await page.context().close();
+  }
+
+  // «Поделиться»: компьютер — всегда наше окно; телефон — системное меню (решение Романа 11 ноя)
+  console.log("\nПоделиться на компьютере и телефоне:");
+  {
+    const stub = () => {
+      window.__shared = [];
+      Object.defineProperty(Navigator.prototype, "share", { configurable: true, writable: true,
+        value: function (data) { window.__shared.push(data); return Promise.resolve(); } });
+    };
+    const { devices } = require("playwright");
+    const zm = await (async () => { const p = await newPage(browser, { width: 390, height: 844 }); await p.goto(BASE); const id = await idOf(p, "Змея"); await p.context().close(); return id; })();
+    const kinds = [
+      { name: "компьютер", opts: { viewport: { width: 1366, height: 768 }, hasTouch: false }, desktop: true },
+      { name: "ноутбук с тачскрином и мышью", opts: { viewport: { width: 1366, height: 768 }, hasTouch: false }, touchPoints: 10, desktop: true },
+      { name: "телефон", opts: { ...devices["iPhone 13"] }, desktop: false },
+      { name: "телефон Android", opts: { ...devices["Pixel 5"] }, desktop: false }
+    ];
+    for (const k of kinds) {
+      const ctx = await browser.newContext({ ...k.opts, locale: "ru-RU" });
+      await ctx.addInitScript(stub);
+      if (k.touchPoints) await ctx.addInitScript((n) => { Object.defineProperty(Navigator.prototype, "maxTouchPoints", { configurable: true, get: () => n }); }, k.touchPoints);
+      const page = await ctx.newPage();
+      const errs = []; page.on("pageerror", (e) => errs.push(String(e)));
+      await page.goto(BASE + "#dream=" + zm); await page.waitForSelector("main h1");
+      ok(await page.evaluate(() => window.Sonnik.isDesktop()) === k.desktop, k.name + ": определён как " + (k.desktop ? "компьютер" : "телефон"));
+      await page.locator(".btn-share-top").click(); await page.waitForTimeout(200);
+      const modalOpen = await page.locator(".modal").count() === 1;
+      const calls = await page.evaluate(() => window.__shared.length);
+      if (k.desktop) {
+        ok(modalOpen && calls === 0, k.name + " (share есть): открылось наше окно, системное меню не вызвано");
+        ok(await page.locator(".modal .btn-vk").count() === 1 && await page.locator(".modal .btn-ok").count() === 1, k.name + ": в окне ВКонтакте и Одноклассники");
+        ok(await page.locator(".modal button", { hasText: "Скопировать текст" }).count() === 1 && await page.locator(".modal button", { hasText: "Открытка со сном" }).count() === 1, k.name + ": в окне «Скопировать текст» и открытка");
+        await page.locator(".modal .share-other").click(); await page.waitForTimeout(100);
+        ok(await page.evaluate(() => window.__shared.length) === 1, k.name + ": «Другие приложения…» вызывает системное меню");
+        await layoutChecks(page, k.name + " окно поделиться");
+      } else {
+        ok(!modalOpen && calls === 1, k.name + " (share есть): вызвано системное меню, нашего окна нет");
+      }
+      ok(!errs.length, k.name + ": ошибок нет " + (errs.length ? JSON.stringify(errs) : ""));
+      await ctx.close();
+    }
   }
 
   // История и разделы

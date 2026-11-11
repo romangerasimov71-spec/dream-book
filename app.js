@@ -515,7 +515,7 @@
 
     var shareBtn = h("button", { type: "button", class: "btn btn-primary btn-wide" }, [icon("share"), "Поделиться"]);
     shareBtn.addEventListener("click", function () { share(d, shareBtn); });
-    var cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка со сном"]);
+    var cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка"]);
     cardBtn.addEventListener("click", function () { openPostcard(d, cardBtn); });
     app.appendChild(h("div", { class: "actions" }, [
       shareBtn,
@@ -693,11 +693,63 @@
     if (!fromHistory && history.state && history.state.modal) history.back();
   }
 
+  /* ================= кнопки: слова не рвём ================= */
+
+  // Слова на кнопках не переносятся посередине (CSS). Если подпись не влезает
+  // в половину ширины — ряд встаёт в одну колонку; если и так тесно — ужимаем поля.
+  function overflows(el) { return el.offsetParent !== null && el.scrollWidth > el.clientWidth + 1; }
+  function fitButtons() {
+    var rows = document.querySelectorAll(".btn-row, .modal .stack");
+    var btns = document.querySelectorAll(".btn");
+    var i, j;
+    for (i = 0; i < rows.length; i++) rows[i].classList.remove("one-col");
+    for (i = 0; i < btns.length; i++) { btns[i].classList.remove("btn-tight"); btns[i].style.fontSize = ""; }
+    for (i = 0; i < rows.length; i++) {
+      var kids = rows[i].querySelectorAll(".btn");
+      for (j = 0; j < kids.length; j++) if (overflows(kids[j])) { rows[i].classList.add("one-col"); break; }
+    }
+    var tight = [];
+    for (i = 0; i < btns.length; i++) if (overflows(btns[i])) { btns[i].classList.add("btn-tight"); tight.push(btns[i]); }
+    // Совсем крайний случай (узкий телефон и шрифт 200%): одно длинное слово шире
+    // кнопки — чуть уменьшаем шрифт этой кнопки, но не рвём слово.
+    tight.forEach(function (b) {
+      for (var k = 0; k < 6 && overflows(b); k++) {
+        var fs = parseFloat(getComputedStyle(b).fontSize);
+        b.style.fontSize = Math.floor(fs * Math.max(0.8, (b.clientWidth - 2) / b.scrollWidth)) + "px";
+      }
+    });
+  }
+  var fitQueued = false;
+  function queueFit() {
+    if (fitQueued) return;
+    fitQueued = true;
+    (window.requestAnimationFrame || setTimeout)(function () { fitQueued = false; fitButtons(); });
+  }
+  function watchButtons() {
+    if (window.MutationObserver) new MutationObserver(queueFit).observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", queueFit);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(queueFit, function () {});
+    queueFit();
+  }
+
   /* ================= поделиться ================= */
 
+  // Компьютер: главный указатель — мышь (точный и с наведением), или тача нет вовсе.
+  // Ноутбук с сенсорным экраном и мышью — тоже компьютер.
+  function isDesktop() {
+    var mm = window.matchMedia;
+    var mouse = !!(mm && mm("(pointer: fine)").matches && mm("(hover: hover)").matches);
+    var noTouch = typeof navigator.maxTouchPoints === "number"
+      ? navigator.maxTouchPoints === 0
+      : !("ontouchstart" in window);
+    return mouse || noTouch;
+  }
+
+  // Решение Романа 11 ноя: на компьютере всегда наше окно (в системном меню
+  // ВК и ОК обычно нет); на телефоне и планшете — системное меню, если оно есть.
   function share(d, opener) {
     var text = shareText(d), url = shareUrl(d);
-    if (navigator.share) {
+    if (navigator.share && !isDesktop()) {
       navigator.share({ title: "Сонник: " + d.title, text: text, url: url }).catch(function (e) {
         if (e && e.name === "AbortError") return;
         openShareModal(d, opener);
@@ -720,7 +772,7 @@
     });
     var cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка со сном"]);
     cardBtn.addEventListener("click", function () { openPostcard(d, opener); });
-    var body = h("div", null, [
+    var parts = [
       h("p", { class: "share-preview", text: text + " " + url }),
       h("div", { class: "stack" }, [
         h("a", { class: "btn btn-vk btn-wide", href: vk, target: "_blank", rel: "noopener" }, "ВКонтакте"),
@@ -728,7 +780,16 @@
         copyBtn,
         cardBtn
       ])
-    ]);
+    ];
+    // На компьютере системное меню — маленькой второстепенной кнопкой.
+    if (navigator.share && isDesktop()) {
+      var other = h("button", { type: "button", class: "link-btn share-other" }, "Другие приложения…");
+      other.addEventListener("click", function () {
+        navigator.share({ title: "Сонник: " + d.title, text: text, url: url }).catch(function () { /* закрыли меню — ничего */ });
+      });
+      parts.push(h("p", { class: "share-other-wrap" }, other));
+    }
+    var body = h("div", null, parts);
     openModal("Поделиться сном", body, opener);
   }
 
@@ -961,12 +1022,13 @@
     }
 
     drawSky();
+    watchButtons();
     render(true);
     scheduleMidnight();
   }
 
   // Для автотеста.
-  window.Sonnik = { dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, count: DREAMS.length };
+  window.Sonnik = { isDesktop: isDesktop, dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, count: DREAMS.length };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();
