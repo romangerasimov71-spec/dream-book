@@ -659,6 +659,7 @@ h1:focus, h2:focus { outline: none; }
 }
 .foot p { margin: 0 0 6px; }
 .demo-note { opacity: .85; }
+.support-note { opacity: .85; overflow-wrap: anywhere; }
 
 /* ---------- узкие и невысокие экраны ---------- */
 @media (max-width: 360px) {

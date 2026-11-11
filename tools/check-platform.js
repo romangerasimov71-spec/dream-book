@@ -495,7 +495,7 @@ async function unlockWeek(page) {
     const sh = await page.evaluate(() => window.__sh);
     ok(sh.length === 1 && /#dream=zmeya$/.test(sh[0].url) && /^Мне приснилось: Змея/.test(sh[0].text), ch + ": окно площадки получило текст и ссылку на сон " + (sh[0] ? sh[0].url : ""));
     const other = await page.locator(ch === "vk" ? ".modal .btn-ok" : ".modal .btn-vk").count();
-    ok(ch === "vk" ? other === 1 : other === 0, ch + ": кнопка другой сети " + (ch === "vk" ? "есть (ссылки разрешены)" : "спрятана (ссылки наружу запрещены)"));
+    ok(other === 0, ch + ": кнопки другой сети нет (во ВК — ни слова про ОК, в ОК — про ВКонтакте)");
     ok((await events(page)).some((e) => e.name === "share_clicked" && e.data.channel === ch && e.data.dream_id === "zmeya"), ch + ": отметка share_clicked channel=" + ch);
     // открытка: скачивание не работает — картинка на весь экран
     await page.click(".modal button:has-text('Открытка со сном')"); await page.waitForTimeout(200);
@@ -510,6 +510,39 @@ async function unlockWeek(page) {
     await page.keyboard.press("Escape"); await page.waitForTimeout(100);
     ok(await page.locator(".modal").count() === 0, ch + ": Esc закрывает");
     await page.context().close();
+  }
+  // Запуск по-настоящему: площадку узнаём по параметрам адреса (Bridge 2.4.1 в ОК отвечает 'vk').
+  // fake — VK Bridge с unpkg подменён (Bridge поднимается), blocked — unpkg недоступен (Bridge не поднимается).
+  console.log("\nЗапуск в ВК и ОК по параметрам адреса:");
+  const APP_CONFIG_URL = (() => { const w = {}; require("vm").runInNewContext(require("fs").readFileSync(require("path").join(__dirname, "..", "config.js"), "utf8"), { window: w }); return w.APP_CONFIG.APP_URL; })();
+  const FAKE_VKB = "window.vkBridge={send:function(m,p){window.__vkb=(window.__vkb||[]).concat([{m:m,p:p}]);" +
+    "if(m==='VKWebAppStorageGet')return Promise.resolve({keys:(p.keys||[]).map(function(k){return {key:k,value:''}})});" +
+    "if(m==='VKWebAppGetUserInfo')return Promise.resolve({id:1});return Promise.resolve({result:true});}," +
+    "subscribe:function(){},supports:function(){return true},isWebView:function(){return false}};";
+  for (const [where, query] of [["ok", "?vk_app_id=54891122&vk_client=ok&vk_platform=mobile_web_ok&vk_language=ru"],
+    ["ok", "?logged_user_id=1&application_key=X&api_server=https%3A%2F%2Fapi.ok.ru%2F&session_key=s"],
+    ["vk", "?vk_app_id=54891122&vk_platform=mobile_android&vk_language=ru"]]) {
+    for (const net of ["fake", "blocked"]) {
+      const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "ru-RU" });
+      await ctx.route("https://unpkg.com/**", (r) => net === "fake" ? r.fulfill({ contentType: "text/javascript", body: FAKE_VKB }) : r.abort());
+      const page = await open(browser, BASE + query + "#dream=zmeya", null, { ctx });
+      const st = await page.evaluate(() => ({ id: Platform.id, launch: Platform.launch, bridgeId: Platform.bridgeId || "", url: Platform.appUrl(), native: Platform.nativeShareChannel(), links: Platform.externalLinksAllowed() }));
+      const label = where + " (" + net + ", " + query.slice(1, 30) + "…)";
+      ok(st.launch === where && st.id !== (where === "ok" ? "vk" : "ok"), label + ": площадка " + JSON.stringify(st));
+      ok(st.url === APP_CONFIG_URL[where] && !st.links, label + ": ссылка " + st.url + ", ссылки наружу запрещены");
+      await page.click(".btn-share-top"); await page.waitForSelector(".modal");
+      const txt = await page.evaluate(() => document.body.innerText + " " + [...document.querySelectorAll("a[href]")].map((a) => a.href).join(" "));
+      if (where === "ok") ok(!/ВКонтакте|vk\.com\/(app|share)|github\.io|connect\.ok/i.test(txt), label + ": в ОК нет ВКонтакте, vk.com/app, github.io и внешних ссылок");
+      else ok(!/Одноклассник|ok\.ru|github\.io/i.test(txt), label + ": во ВК нет Одноклассников и ok.ru");
+      ok(await page.locator(".modal a[target=_blank]").count() === 0, label + ": в окне «Поделиться» нет ссылок наружу");
+      if (net === "fake" && st.native) {
+        await page.locator(".modal .stack .btn").first().click(); await page.waitForTimeout(200);
+        const calls = await page.evaluate(() => (window.__vkb || []).filter((c) => c.m === "VKWebAppShare"));
+        ok(calls.length === 1 && calls[0].p.link === APP_CONFIG_URL[where] + "#dream=zmeya", label + ": VKWebAppShare со ссылкой " + (calls[0] && calls[0].p.link));
+      }
+      ok(page._errors.filter((e) => !/Failed to load resource|ERR_FAILED|unpkg/.test(e)).length === 0, label + ": ошибок нет " + JSON.stringify(page._errors.slice(0, 3)));
+      await ctx.close();
+    }
   }
   {
     // Ссылка из ВК: адрес приложения в config.js и payload

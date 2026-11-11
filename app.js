@@ -231,6 +231,7 @@
   // Ссылка на сон: адрес приложения в площадке (config.js APP_URL), без него — текущий адрес.
   function shareUrl(d) {
     var base = PF ? PF.appUrl() : location.href.split("#")[0].split("?")[0];
+    if (!base) return "";
     return base.split("#")[0] + "#dream=" + encodeURIComponent(d.id);
   }
 
@@ -632,6 +633,7 @@
   }
   function weekShareUrl() {
     var base = PF ? PF.appUrl() : location.href.split("#")[0].split("?")[0];
+    if (!base) return "";
     return base.split("#")[0] + "#week";
   }
   // «Моя неделя в Соннике: пятница, 13 ноября — …; суббота, 14 ноября — …. Узнайте свою неделю!»
@@ -1221,6 +1223,8 @@
   // Решение Романа 11 ноя: на компьютере всегда наше окно (в системном меню
   // ВК и ОК обычно нет); на телефоне и планшете — системное меню, если оно есть.
   // В ВК и ОК — всегда наше окно: первая кнопка там — «поделиться» самой площадки.
+  // В ОК — ни слова про ВКонтакте и ни одной ссылки наружу; во ВК — ничего про Одноклассники
+  // (правила ВК 4.1.8 и правила ОК). Обе сети ссылками — только вне площадок (GitHub Pages, сайт).
   // Что делимся: сон (с открыткой), неделя или один день недели.
   function dreamShareItem(d) {
     return { what: "dream", heading: "Поделиться сном", title: "Сонник: " + d.title, text: shareText(d), url: shareUrl(d), dream: d };
@@ -1234,7 +1238,9 @@
     if (!item.what) item = dreamShareItem(item);
     if (navigator.share && !isDesktop() && !(PF && PF.nativeShareChannel())) {
       shareMark(item, "system");
-      navigator.share({ title: item.title, text: item.text, url: item.url }).catch(function (e) {
+      var sd = { title: item.title, text: item.text };
+      if (item.url) sd.url = item.url;
+      navigator.share(sd).catch(function (e) {
         if (e && e.name === "AbortError") return;
         openShareModal(item, opener);
       });
@@ -1251,6 +1257,8 @@
       "&title=" + encodeURIComponent(item.title) + "&description=" + encodeURIComponent(text);
     var native = PF ? PF.nativeShareChannel() : "";
     var links = !PF || PF.externalLinksAllowed();
+    var where = PF ? (PF.launch || (PF.id === "vk" || PF.id === "ok" ? PF.id : "")) : "";
+    var full = url ? text + " " + url : text;
     var mark = function (ch) { return function () { shareMark(item, ch); }; };
     // Своя площадка — её окном «поделиться»; другая сеть — ссылкой, если площадка разрешает ссылки.
     function netButton(ch, cls, label, href) {
@@ -1268,7 +1276,7 @@
     var copyBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("copy"), "Скопировать текст"]);
     copyBtn.addEventListener("click", function () {
       mark("copy")();
-      copyText(text + "\n" + url).then(function (okk) {
+      copyText(url ? text + "\n" + url : text).then(function (okk) {
         toast(okk ? "Текст скопирован — вставьте его в сообщение" : "Не получилось скопировать");
       });
     });
@@ -1277,11 +1285,11 @@
       cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка со сном"]);
       cardBtn.addEventListener("click", function () { openPostcard(d, opener); });
     }
-    var vkBtn = netButton("vk", "btn-vk", native === "vk" ? "Поделиться ВКонтакте" : "ВКонтакте", vk);
-    var okBtn = netButton("ok", "btn-ok", native === "ok" ? "Поделиться в Одноклассниках" : "Одноклассники", ok);
+    var vkBtn = where === "ok" ? null : netButton("vk", "btn-vk", native === "vk" ? "Поделиться ВКонтакте" : "ВКонтакте", vk);
+    var okBtn = where === "vk" ? null : netButton("ok", "btn-ok", native === "ok" ? "Поделиться в Одноклассниках" : "Одноклассники", ok);
     var nets = native === "ok" ? [okBtn, vkBtn] : [vkBtn, okBtn];
     var parts = [
-      h("p", { class: "share-preview", text: text + " " + url }),
+      h("p", { class: "share-preview", text: full }),
       h("div", { class: "stack" }, nets.concat([copyBtn, cardBtn]).filter(Boolean))
     ];
     // На компьютере (и в ВК/ОК) системное меню — маленькой второстепенной кнопкой.
@@ -1289,7 +1297,9 @@
       var other = h("button", { type: "button", class: "link-btn share-other" }, "Другие приложения…");
       other.addEventListener("click", function () {
         mark("system")();
-        navigator.share({ title: item.title, text: text, url: url }).catch(function () { /* закрыли меню — ничего */ });
+        var sd = { title: item.title, text: text };
+        if (url) sd.url = url;
+        navigator.share(sd).catch(function () { /* закрыли меню — ничего */ });
       });
       parts.push(h("p", { class: "share-other-wrap" }, other));
     }
@@ -1420,7 +1430,7 @@
           if (navigator.canShare({ files: [file] })) {
             var sendBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("share"), "Отправить открытку"]);
             sendBtn.addEventListener("click", function () {
-              navigator.share({ files: [file], title: "Сонник: " + d.title, text: shareText(d) + " " + shareUrl(d) })
+              navigator.share({ files: [file], title: "Сонник: " + d.title, text: shareText(d) + (shareUrl(d) ? " " + shareUrl(d) : "") })
                 .then(function () { AN.event("postcard_saved", { method: "share_file", dream_id: d.id }); })
                 .catch(function () { /* человек передумал */ });
             });
@@ -1541,6 +1551,10 @@
     document.addEventListener("visibilitychange", function () { if (document.hidden) flushSave(); else refreshToday(); });
     window.addEventListener("pagehide", flushSave);
     watchKeyboard();
+
+    // Канал поддержки (требование ВК): config.js SUPPORT. Пусто — строки нет.
+    var supNote = document.getElementById("supportNote");
+    if (supNote && CFG.SUPPORT) { supNote.textContent = "Поддержка и новинки: " + CFG.SUPPORT; supNote.hidden = false; }
 
     if (window.DREAMS_DEMO) {
       var note = document.getElementById("demoNote");
