@@ -34,7 +34,7 @@ const srv = http.createServer((req, res) => {
   // неделя: открыть за рекламу
   await page.goto(base + "?nobanner&fakead=ok&fakeadsec=1#week");
   await page.waitForTimeout(800);
-  await page.screenshot({ path: path.join(OUT, "_week-closed.png") });
+  await page.screenshot({ path: path.join(require("os").tmpdir(), "sonnik_week-closed.png") });
   const adBtn = page.locator("button.btn-primary").first();
   console.log("кнопка:", await adBtn.innerText());
   await adBtn.click();
@@ -52,6 +52,6 @@ const srv = http.createServer((req, res) => {
   await page.locator("button", { hasText: "Открытка со сном" }).click();
   await page.waitForTimeout(1500);
   await snap("6-otkrytka");
-  fs.writeFileSync(path.join(OUT, "_body.txt"), await page.evaluate(() => document.body.innerText));
+  fs.writeFileSync(path.join(require("os").tmpdir(), "sonnik_body.txt"), await page.evaluate(() => document.body.innerText));
   await b.close(); srv.close();
 })();
