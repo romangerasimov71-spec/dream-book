@@ -183,7 +183,7 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     ok(vk.startsWith("https://vk.com/share.php?url=") && decodeURIComponent(vk).includes("#dream=" + zmeya), "ссылка ВК правильная");
     ok(okr.startsWith("https://connect.ok.ru/offer?url=") && okr.includes("description="), "ссылка ОК правильная");
     const prev = await page.locator(".share-preview").textContent();
-    ok(/^Мне приснилась змея: .+ — Сонник http/.test(prev), "текст: " + prev.slice(0, 70) + "…");
+    ok(/^Мне приснилась змея[:.] .+ — Сонник http/.test(prev), "текст: " + prev.slice(0, 70) + "…");
     await layoutChecks(page, "окно поделиться");
     await shot(page, sc.name + "-5-share");
     await page.keyboard.press("Escape");

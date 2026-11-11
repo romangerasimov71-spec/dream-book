@@ -222,7 +222,10 @@
   function shareText(d) {
     var verb = dreamtVerb(d.title);
     var head = verb ? "Мне " + verb + " " + lowerFirst(d.title) : "Мне приснился сон «" + d.title + "»";
-    var sh = d.short || "";
+    var sh = (d.short || "").trim();
+    if (!sh) return head + " — Сонник";
+    // «Змея во сне — про скрытое…» уже называет сон: тогда отдельное предложение, без двоеточия.
+    if (S.norm(sh).indexOf(S.norm(d.title)) === 0) return head + ". " + sh + " — Сонник";
     if (sh.length > 1 && sh.charAt(1) === sh.charAt(1).toLocaleLowerCase("ru")) sh = lowerFirst(sh);
     return head + ": " + sh + " — Сонник";
   }
