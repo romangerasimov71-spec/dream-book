@@ -22,9 +22,26 @@
     "а", "я", "о", "е", "ы", "и", "у", "ю", "ь", "й"
   ];
 
+  // Корни слов о смерти: с ними ищем Покойника/Свою смерть, без них — не подмешиваем.
+  var DEATH_RE = /^(покойн|умер|умир|мертв|усопш|помер|погиб|смерт)/;
+  function deathRoot(w) { return DEATH_RE.test(w) ? w.slice(0, 4) : ""; }
+
+  var LAT_PAIRS = [["shch", "щ"], ["sch", "щ"], ["sh", "ш"], ["ch", "ч"], ["zh", "ж"], ["kh", "х"], ["ts", "ц"],
+    ["yo", "ё"], ["jo", "ё"], ["yu", "ю"], ["ju", "ю"], ["ya", "я"], ["ja", "я"], ["ye", "е"], ["je", "е"]];
+  var LAT_ONE = { a: "а", b: "б", v: "в", g: "г", d: "д", e: "е", z: "з", i: "и", j: "й", k: "к", l: "л", m: "м",
+    n: "н", o: "о", p: "п", r: "р", s: "с", t: "т", u: "у", f: "ф", h: "х", c: "к", y: "ы", w: "в", x: "кс", q: "к", "'": "ь" };
+
+  // Простая транслитерация: «sobaka» → «собака», «ZMEYA» → «змея».
+  function translit(s) {
+    s = String(s == null ? "" : s).toLowerCase();
+    if (!/[a-z]/.test(s)) return s;
+    LAT_PAIRS.forEach(function (p) { s = s.split(p[0]).join(p[1]); });
+    s = s.replace(/[a-z']/g, function (ch) { return LAT_ONE[ch] || ch; });
+    return s.replace(/([аеёиоуыэюя])ы/g, "$1й");
+  }
+
   function norm(s) {
-    return String(s == null ? "" : s)
-      .toLowerCase()
+    return translit(s)
       .replace(/ё/g, "е")
       .replace(/[^a-zа-я0-9\s]/g, " ")
       .replace(/\s+/g, " ")
@@ -77,116 +94,158 @@
       var terms = [];
       all.forEach(function (t, i) {
         var ws = words(t);
-        if (!ws.length) return;
+        var key = ws.filter(function (w) { return !STOP.has(w); });
+        if (!key.length) key = ws;
+        if (!key.length) return;
         terms.push({
           isTitle: i === 0,
           phrase: ws.join(" "),
-          ws: ws.map(function (w) { return { w: w, s: stem(w) }; })
+          ws: key.map(function (w) { return { w: w, s: stem(w), death: deathRoot(w) }; }),
+          death: key.some(function (w) { return DEATH_RE.test(w); })
         });
       });
       return { d: d, terms: terms };
     });
   }
 
-  function allowedTypos(len) {
-    if (len <= 3) return 0;
-    if (len <= 6) return 1;
-    return 2;
-  }
-
-  function wordScore(qw, qs, tw, ts, suggest) {
-    if (qw === tw) return 100;
-    if (qs.length >= 3 && qs === ts) return 92;
+  /* Сравнение слова запроса со СЛОВОМ ИЗ ОДНОСЛОВНОГО названия/синонима.
+     Возвращает {s: очки, strong: уверенное ли совпадение} или null. */
+  function singleMatch(q, t, isTitle, suggest) {
+    var qw = q.w, tw = t.w;
+    if (qw === tw) return { s: 100, strong: true };
+    if (q.s.length >= 3 && q.s === t.s) return { s: 92, strong: true };
     if (tw.indexOf(qw) === 0) {
-      if (qw.length >= 3) return Math.min(88, 70 + Math.round(18 * qw.length / tw.length));
-      if (suggest) return 50;
-    }
-    if (ts.length >= 4 && qw.indexOf(ts) === 0) return 68;
-    var max = allowedTypos(qw.length);
-    if (max) {
-      var d = Math.min(lev(qs, ts, max), lev(qw, tw, max));
-      if (d <= max) return 60 - 8 * d;
-      if (suggest && tw.length > qw.length && qw.length >= 4) {
-        d = lev(qw, tw.slice(0, qw.length), max);
-        if (d <= max) return 46 - 6 * d;
+      var ratio = qw.length / tw.length;
+      if (isTitle) {
+        if (qw.length >= 4 && ratio >= 0.6) return { s: 70 + Math.round(18 * ratio), strong: true };
+        if (qw.length >= (suggest ? 2 : 3)) return { s: 50 + Math.round(10 * ratio), strong: false };
+      } else if (qw.length >= 4 && ratio >= 0.5) {
+        return ratio >= 0.6 ? { s: 66 + Math.round(18 * ratio), strong: true } : { s: 48, strong: false };
       }
     }
-    return 0;
+    if (t.s.length >= 4 && qw.indexOf(t.s) === 0) return { s: 46, strong: false };
+    // Опечатки: только длинные слова, первая буква совпадает, сравниваем целые слова.
+    if (qw.length >= 5 && qw[0] === tw[0]) {
+      var max = qw.length >= 8 ? 2 : 1;
+      var d = lev(qw, tw, max);
+      if (d <= max) return { s: 52 - 6 * d, strong: false };
+      if (suggest && tw.length > qw.length) {
+        d = lev(qw, tw.slice(0, qw.length), max);
+        if (d <= max) return { s: 44 - 4 * d, strong: false };
+      }
+    }
+    return null;
   }
 
-  var MIN_SCORE = 44;
-
-  /* Возвращает [{d, score}] по убыванию. opts: {suggest: bool, limit: number} */
+  /* Возвращает [{d, score, strong}]: сначала уверенные, потом «может быть». opts: {suggest, limit} */
   function search(index, q, opts) {
     opts = opts || {};
     var qws = queryWords(q);
+    var rawNorm = norm(q);
     if (!qws.length && opts.suggest) {
-      // Человек ещё печатает: «со…» — служебное слово, но может стать «собакой».
       var raw = words(q).filter(function (w) { return w.length >= 2; });
       if (raw.length) qws = [raw[raw.length - 1]];
     }
     if (!qws.length) return [];
-    var qphrase = " " + qws.join(" ") + " ";
-    var qinfo = qws.map(function (w) { return { w: w, s: stem(w) }; });
+    var qinfo = qws.map(function (w) { return { w: w, s: stem(w), death: deathRoot(w) }; });
+    var qHasDeath = qinfo.some(function (x) { return x.death; });
     var out = [];
+
     index.forEach(function (e) {
-      var per = qinfo.map(function () { return 0; });
-      var phraseBonus = 0;
+      var per = qinfo.map(function () { return null; });
+      var bonus = 0, deathHit = false;
+      function put(qi, s, strong) {
+        var cur = per[qi];
+        if (!cur || (strong && !cur.strong) || (strong === cur.strong && s > cur.s)) per[qi] = { s: s, strong: strong };
+      }
       e.terms.forEach(function (t) {
-        var bonus = (t.isTitle ? 4 : 0) + (t.ws.length === 1 ? 3 : 0);
-        if (t.ws.length > 1 && qphrase.indexOf(" " + t.phrase + " ") >= 0) phraseBonus = Math.max(phraseBonus, 12);
-        qinfo.forEach(function (q, qi) {
-          t.ws.forEach(function (tw) {
-            var s = wordScore(q.w, q.s, tw.w, tw.s, !!opts.suggest);
-            if (s) {
-              s += bonus;
-              if (s > per[qi]) per[qi] = s;
-            }
+        if (t.death && !qHasDeath && !(opts.suggest && t.ws.some(function (tw) {
+          return qinfo.some(function (qq) { return qq.w.length >= 3 && tw.w.indexOf(qq.w) === 0; });
+        }))) return;
+        var tb = t.isTitle ? 4 : 0;
+        if (t.ws.length === 1) {
+          tb += 3;
+          qinfo.forEach(function (qq, qi) {
+            var m = singleMatch(qq, t.ws[0], t.isTitle, !!opts.suggest);
+            if (m) put(qi, m.s + tb, m.strong);
           });
-        });
+        } else {
+          // Многословный синоним: уверенно — только если в запросе есть все его слова.
+          var hits = t.ws.map(function (tw) {
+            for (var qi = 0; qi < qinfo.length; qi++) {
+              if (qinfo[qi].w === tw.w) return { qi: qi, s: 100 };
+              if (qinfo[qi].s.length >= 3 && qinfo[qi].s === tw.s) return { qi: qi, s: 92 };
+            }
+            return null;
+          });
+          var all = hits.every(Boolean);
+          hits.forEach(function (hh) {
+            if (!hh) return;
+            if (all) put(hh.qi, hh.s + tb, true);
+            else put(hh.qi, hh.s === 100 ? 55 : 50, false);
+          });
+          if (all) bonus = Math.max(bonus, 12);
+          if (opts.suggest && t.isTitle && rawNorm.length >= 3 && t.phrase.indexOf(rawNorm) === 0) put(qinfo.length - 1, 75, false);
+        }
+        // Слова о смерти: «умерший», «покойная» и т.п. — по общему корню.
+        if (qHasDeath) {
+          t.ws.forEach(function (tw) {
+            if (!tw.death) return;
+            qinfo.forEach(function (qq, qi) {
+              if (qq.death && qq.death === tw.death) { put(qi, 85, true); deathHit = true; }
+            });
+          });
+        }
       });
-      var good = per.filter(function (s) { return s >= MIN_SCORE; });
-      if (!good.length) return;
-      var best = Math.max.apply(null, good);
-      var sum = good.reduce(function (a, b) { return a + b; }, 0);
-      var score = best + 0.35 * (sum - best) + phraseBonus;
-      out.push({ d: e.d, score: score });
+      var got = per.filter(Boolean);
+      if (!got.length) return;
+      var strong = got.some(function (x) { return x.strong; });
+      var vals = got.map(function (x) { return x.s; });
+      var best = Math.max.apply(null, vals);
+      var sum = vals.reduce(function (a, b) { return a + b; }, 0);
+      if (deathHit) bonus += 40;
+      out.push({ d: e.d, score: best + 0.35 * (sum - best) + bonus, strong: strong, deathHit: deathHit });
     });
+
+    // «Умер отец», «умерла бабушка»: если в запросе есть и родня — это Покойник, а не своя смерть.
+    if (qHasDeath) {
+      var kin = out.some(function (r) { return r.strong && !r.deathHit && r.d.cat === "Люди и родня"; });
+      if (kin) out.forEach(function (r) { if (r.deathHit && r.d.cat === "Люди и родня") r.score += 15; });
+    }
+
     out.sort(function (a, b) {
-      return b.score - a.score || a.d.title.length - b.d.title.length || a.d.title.localeCompare(b.d.title, "ru");
+      return (b.strong - a.strong) || b.score - a.score || a.d.title.length - b.d.title.length || a.d.title.localeCompare(b.d.title, "ru");
     });
     return opts.limit ? out.slice(0, opts.limit) : out;
   }
 
-  /* Похожие по написанию — для экрана «ничего не нашлось». */
+  /* Похожие по написанию — для экрана «ничего не нашлось». Только достаточно близкие. */
   function similar(index, q, n) {
     var qws = queryWords(q);
-    if (!qws.length) qws = words(q);
     if (!qws.length) return [];
     var out = [];
     index.forEach(function (e) {
       var best = 0;
       e.terms.forEach(function (t) {
-        t.ws.forEach(function (tw) {
-          qws.forEach(function (qw) {
-            var a = stem(qw), b = tw.s;
-            var m = Math.max(a.length, b.length) || 1;
-            var sim = 1 - lev(a, b) / m;
-            if (a[0] === b[0]) sim += 0.15;
-            if (a.slice(0, 2) === b.slice(0, 2)) sim += 0.1;
-            if (sim > best) best = sim;
-          });
+        if (t.ws.length !== 1 || t.death) return;
+        var tw = t.ws[0].w;
+        qws.forEach(function (qw) {
+          if (qw.length < 3) return;
+          var m = Math.max(qw.length, tw.length);
+          var sim = 1 - lev(qw, tw) / m;
+          if (qw[0] !== tw[0]) sim -= 0.15;
+          if (sim > best) best = sim;
         });
       });
-      if (best > 0.34) out.push({ d: e.d, score: best });
+      if (best >= 0.6) out.push({ d: e.d, score: best });
     });
     out.sort(function (a, b) { return b.score - a.score; });
     return out.slice(0, n || 5).map(function (r) { return r.d; });
   }
 
   var api = {
-    norm: norm, words: words, stem: stem, lev: lev, queryWords: queryWords,
-    buildIndex: buildIndex, search: search, similar: similar, MIN_SCORE: MIN_SCORE
+    norm: norm, words: words, stem: stem, lev: lev, translit: translit, queryWords: queryWords,
+    buildIndex: buildIndex, search: search, similar: similar
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   else root.SonnikSearch = api;

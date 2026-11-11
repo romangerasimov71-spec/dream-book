@@ -191,43 +191,12 @@
 
   /* ================= текст для «поделиться» ================= */
 
-  var FEM_SOFT = ("лошадь соль кровь дверь постель тень смерть грязь обувь церковь моль рысь сирень морковь " +
-    "площадь печь пыль боль любовь свекровь сеть нить мать тетрадь грудь бровь ладонь осень метель " +
-    "медь ртуть ель лань мазь цепь кровать шаль вуаль").split(" ");
-  var MASC_A = ("папа дядя дедушка мужчина юноша дедуля батюшка папочка слуга судья староста дядюшка").split(" ");
-  var MASC_SOFT = ("путь гость конь огонь дождь день корень камень ремень медведь лебедь голубь гвоздь ноготь " +
-    "локоть уголь царь король учитель руль портфель рубль").split(" ");
-
-  function dreamtVerb(title) {
-    var ws = S.words(title);
-    var w = ws[0] || "";
-    if (ws.length > 1 && /(ый|ий|ой|ая|яя|ое|ее|ые|ие)$/.test(w) && !/(ние|тие|ье)$/.test(w)) {
-      if (/(ые|ие)$/.test(w)) return "приснились";
-      if (/(ая|яя)$/.test(w)) return "приснилась";
-      if (/(ое|ее)$/.test(w)) return "приснилось";
-      return "приснился";
-    }
-    if (/[ыи]$/.test(w)) return "приснились";
-    if (/[ая]$/.test(w)) return MASC_A.indexOf(w) >= 0 ? "приснился" : "приснилась";
-    if (/[оеё]$/.test(w)) return "приснилось";
-    if (/ь$/.test(w)) {
-      if (MASC_SOFT.indexOf(w) >= 0) return "приснился";
-      if (/(ость|есть|[жшчщ]ь)$/.test(w) || FEM_SOFT.indexOf(w) >= 0) return "приснилась";
-      if (/(ть|ться)$/.test(w)) return null; // похоже на действие: «Летать»
-      return "приснился";
-    }
-    return "приснился";
-  }
-
+  // Без угадывания рода: «Мне приснилось: Яйца. …». Если short уже начинается с названия — не повторяем его.
   function shareText(d) {
-    var verb = dreamtVerb(d.title);
-    var head = verb ? "Мне " + verb + " " + lowerFirst(d.title) : "Мне приснился сон «" + d.title + "»";
     var sh = (d.short || "").trim();
-    if (!sh) return head + " — Сонник";
-    // «Змея во сне — про скрытое…» уже называет сон: тогда отдельное предложение, без двоеточия.
-    if (S.norm(sh).indexOf(S.norm(d.title)) === 0) return head + ". " + sh + " — Сонник";
-    if (sh.length > 1 && sh.charAt(1) === sh.charAt(1).toLocaleLowerCase("ru")) sh = lowerFirst(sh);
-    return head + ": " + sh + " — Сонник";
+    if (!sh) return "Мне приснилось: " + d.title + " — Сонник";
+    if (S.norm(sh).indexOf(S.norm(d.title)) === 0) return "Мне приснилось: " + sh + " — Сонник";
+    return "Мне приснилось: " + d.title + ". " + sh + " — Сонник";
   }
 
   function shareUrl(d) {
@@ -246,10 +215,12 @@
     try { val = decodeURIComponent(val); } catch (e) { /* оставим как есть */ }
     if (key === "dream") return { name: "dream", id: val };
     if (key === "cat") return { name: "cat", cat: val };
-    if (key === "q") return { name: "q", q: val };
+    if (key === "q") return { name: "q", q: val.slice(0, MAX_Q) };
     if (key === "cats") return { name: "home", anchor: "cats" };
     return { name: "home" };
   }
+
+  var MAX_Q = 100;
 
   function depth() { return (history.state && history.state.depth) || 0; }
 
@@ -280,6 +251,20 @@
     lastHash = hash;
     var app = document.getElementById("app");
     var r = parseHash();
+    if (r.name === "cat" && CATS.indexOf(r.cat) < 0) {
+      // Неизвестный раздел — просто главная.
+      try { history.replaceState({ depth: depth() }, "", location.href.split("#")[0]); } catch (e) { /* ничего */ }
+      lastHash = location.hash;
+      r = { name: "home" };
+    }
+    if (r.name === "q") {
+      // Слишком длинный запрос в адресе — укорачиваем и адрес.
+      var want = "#q=" + encodeURIComponent(r.q);
+      if (location.hash.length > want.length) {
+        try { history.replaceState(history.state, "", location.href.split("#")[0] + want); } catch (e) { /* ничего */ }
+        lastHash = location.hash;
+      }
+    }
     app.textContent = "";
     var focusEl = null;
     if (r.name === "dream") focusEl = renderDream(app, r.id);
@@ -310,7 +295,7 @@
     var input = h("input", {
       id: inputId, class: "search-input", type: "search", inputmode: "search",
       autocomplete: "off", autocapitalize: "off", spellcheck: "false", enterkeyhint: "search",
-      placeholder: "Например: собака",
+      placeholder: "Например: собака", maxlength: String(MAX_Q),
       role: "combobox", "aria-autocomplete": "list", "aria-expanded": "false", "aria-controls": listId
     });
     if (initial) input.value = initial;
@@ -343,30 +328,49 @@
       list.hidden = false;
       input.setAttribute("aria-expanded", "true");
       active = -1;
+      fitList();
     }
+    // Список не должен уходить под экранную клавиатуру.
+    function fitList() {
+      if (list.hidden) return;
+      var vv = window.visualViewport;
+      var bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+      var avail = Math.floor(bottom - list.getBoundingClientRect().top - 8);
+      list.style.maxHeight = Math.max(avail, 110) + "px";
+    }
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", fitList);
+    input.addEventListener("focus", function () {
+      if (!window.matchMedia || !window.matchMedia("(pointer: coarse)").matches) return;
+      setTimeout(function () {
+        var vv = window.visualViewport;
+        var hgt = vv ? vv.height : window.innerHeight;
+        if (input.getBoundingClientRect().top > hgt * 0.3) input.scrollIntoView({ block: "start", behavior: "smooth" });
+        setTimeout(fitList, 350);
+      }, 300);
+    });
     function pick(d) {
       close();
-      addRecent(d.id);
       alts = null;
       navigate("dream=" + encodeURIComponent(d.id));
     }
     function submit() {
       if (active >= 0 && items[active]) { pick(items[active]); return; }
-      var q = input.value.trim();
+      var q = input.value.trim().slice(0, MAX_Q);
       if (!q) {
         hint.textContent = "Напишите слово из сна — например, «собака» или «вода».";
         input.focus();
         return;
       }
       close();
-      var res = S.search(INDEX, q);
-      if (res.length) {
-        var best = res[0];
-        var others = res.slice(1).filter(function (r) { return r.score >= best.score - 30; }).slice(0, 3).map(function (r) { return r.d.id; });
-        addRecent(best.d.id);
+      var strong = S.search(INDEX, q).filter(function (r) { return r.strong; });
+      if (strong.length) {
+        // Сразу открываем только уверенное совпадение; рядом — близкие уверенные варианты.
+        var best = strong[0];
+        var others = strong.slice(1).filter(function (r) { return r.score >= best.score - 15; }).slice(0, 3).map(function (r) { return r.d.id; });
         alts = others.length ? { id: best.d.id, list: others } : null;
         navigate("dream=" + encodeURIComponent(best.d.id));
       } else {
+        // Только «похоже» или ничего — экран с вариантами на выбор.
         navigate("q=" + encodeURIComponent(q));
       }
     }
@@ -418,8 +422,8 @@
 
     var recent = getRecent();
     if (recent.length) {
-      app.appendChild(h("section", { class: "recent", "aria-label": "Недавно искали" }, [
-        h("p", { class: "recent-title", text: "Недавно искали:" }),
+      app.appendChild(h("section", { class: "recent", "aria-label": "Недавно смотрели" }, [
+        h("p", { class: "recent-title", text: "Недавно смотрели:" }),
         h("div", { class: "chips" }, recent.map(function (id) {
           return h("a", { class: "chip", href: "#dream=" + encodeURIComponent(id), text: BY_ID[id].title });
         }))
@@ -467,7 +471,10 @@
       return t;
     }
 
+    addRecent(d.id);
     var title = h("h1", { tabindex: "-1", text: d.title });
+    var topShare = h("button", { type: "button", class: "btn btn-share-top" }, [icon("share"), "Поделиться"]);
+    topShare.addEventListener("click", function () { share(d, topShare); });
     var paras = d.text.split(/\n\s*\n/).filter(Boolean).map(function (p) { return h("p", { text: p }); });
     var art = h("article", { class: "card dream" }, [
       h("div", { class: "dream-head" }, [
@@ -476,6 +483,7 @@
       ]),
       title,
       d.short ? h("p", { class: "short", text: d.short }) : null,
+      topShare,
       h("div", { class: "text" }, paras)
     ]);
     app.appendChild(art);
@@ -483,9 +491,12 @@
     if (alts && alts.id === d.id) {
       var links = alts.list.filter(function (x) { return BY_ID[x]; });
       if (links.length) {
-        app.appendChild(h("p", { class: "also" }, ["Возможно, вы искали: "].concat(links.map(function (x) {
-          return h("a", { href: "#dream=" + encodeURIComponent(x), text: BY_ID[x].title });
-        }))));
+        app.appendChild(h("div", { class: "also" }, [
+          h("p", { text: "Возможно, вы искали:" }),
+          h("div", { class: "chips" }, links.map(function (x) {
+            return h("a", { class: "chip", href: "#dream=" + encodeURIComponent(x), text: BY_ID[x].title });
+          }))
+        ]));
       }
     }
 
@@ -493,7 +504,7 @@
       app.appendChild(h("section", { class: "card details", "aria-labelledby": "detTitle" }, [
         h("h2", { id: "detTitle", text: "Если во сне…" }),
         h("dl", null, d.details.map(function (x) {
-          return h("div", { class: "case" }, [h("dt", { text: String(x.if) }), h("dd", { text: String(x.then) })]);
+          return h("div", { class: "case" }, [h("dt", { text: ifText(x.if) }), h("dd", { text: String(x.then) })]);
         }))
       ]));
     }
@@ -510,7 +521,7 @@
       shareBtn,
       h("div", { class: "btn-row" }, [
         cardBtn,
-        h("button", { type: "button", class: "btn", onclick: function () { anotherDream(d.id); } }, [icon("dice"), "Ещё сон"])
+        h("button", { type: "button", class: "btn", onclick: function () { anotherDream(d.id); } }, [icon("dice"), "Случайный сон"])
       ]),
       h("div", { class: "btn-row" }, [
         h("button", { type: "button", class: "btn", onclick: goBack }, [icon("back"), "Назад"]),
@@ -528,8 +539,27 @@
     return title;
   }
 
+  // «Если …»: в части данных «Если» уже есть, в части — нет. Показываем везде одинаково.
+  function ifText(s) {
+    s = String(s).trim();
+    if (/^если[\s,]/i.test(s)) return s.charAt(0).toLocaleUpperCase("ru") + s.slice(1);
+    var first = s.split(/\s/)[0];
+    var keep = first.length > 1 && first === first.toLocaleUpperCase("ru"); // НЛО и т.п.
+    return "Если " + (keep ? s : lowerFirst(s));
+  }
+
+  // Тревожные сны не подсовываем как «похожие» к спокойным.
+  var SCARY = ["Своя смерть", "Похороны", "Гроб", "Кладбище", "Покойник"];
+  function isScary(x) { return SCARY.indexOf(x.title) >= 0; }
+
   function similarInCat(d, n) {
-    var pool = DREAMS.filter(function (x) { return x.cat === d.cat && x.id !== d.id; });
+    var calm = !isScary(d) && d.mood !== "warn";
+    var pool = DREAMS.filter(function (x) {
+      if (x.cat !== d.cat || x.id === d.id) return false;
+      if (isScary(x) && !isScary(d)) return false;
+      if (calm && x.mood === "warn") return false;
+      return true;
+    });
     var rnd = seeded(strSeed(d.id));
     for (var i = pool.length - 1; i > 0; i--) {
       var j = Math.floor(rnd() * (i + 1));
@@ -543,7 +573,7 @@
     var d;
     do { d = DREAMS[Math.floor(Math.random() * DREAMS.length)]; } while (d.id === currentId);
     alts = null;
-    navigate("dream=" + encodeURIComponent(d.id));
+    navigate("dream=" + encodeURIComponent(d.id), true); // заменяем запись: «назад» не копит случайные сны
   }
 
   function renderCat(app, cat) {
@@ -562,25 +592,38 @@
   }
 
   function renderNotFound(app, q) {
+    q = String(q || "").slice(0, MAX_Q);
     app.appendChild(backButton());
-    var t = h("h1", { tabindex: "-1", text: "Такого сна пока нет в соннике" });
-    app.appendChild(h("div", { class: "card empty" }, [
-      t,
-      h("p", { class: "lead" }, ["Вы искали: ", h("span", { class: "query", text: "«" + q + "»" })]),
-      h("p", { class: "lead", text: "Попробуйте написать одно главное слово из сна — например, «собака», а не «большая лохматая собака»." })
-    ]));
-
-    var sim = S.similar(INDEX, q, 5);
-    if (sim.length < 3) {
-      // Добавим сон дня и пару других, чтобы было что почитать.
-      var extra = [dreamOfDay(new Date())].concat(DREAMS);
-      for (var i = 0; i < extra.length && sim.length < 3; i++) {
-        if (extra[i] && sim.indexOf(extra[i]) < 0) sim.push(extra[i]);
+    var maybe = S.search(INDEX, q).slice(0, 5).map(function (r) { return r.d; });
+    var t;
+    if (maybe.length) {
+      t = h("h1", { tabindex: "-1", text: "Точно такого сна нет" });
+      app.appendChild(h("div", { class: "card empty" }, [
+        t,
+        h("p", { class: "lead" }, ["Вы искали: ", h("span", { class: "query", text: "«" + q + "»" })])
+      ]));
+      app.appendChild(h("h2", { class: "section-title", text: "Может быть, вы имели в виду:" }));
+      app.appendChild(h("ul", { class: "list" }, maybe.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+    } else {
+      t = h("h1", { tabindex: "-1", text: "Такого сна пока нет в соннике" });
+      app.appendChild(h("div", { class: "card empty" }, [
+        t,
+        h("p", { class: "lead" }, ["Вы искали: ", h("span", { class: "query", text: "«" + q + "»" })]),
+        h("p", { class: "lead", text: "Попробуйте написать одно главное слово из сна — например, «собака», а не «большая лохматая собака»." })
+      ]));
+      var sim = S.similar(INDEX, q, 5);
+      if (sim.length) {
+        app.appendChild(h("h2", { class: "section-title", text: "Похоже по написанию:" }));
+        app.appendChild(h("ul", { class: "list" }, sim.map(function (d) { return h("li", null, dreamLink(d, true)); })));
       }
-    }
-    if (sim.length) {
-      app.appendChild(h("h2", { class: "section-title", text: "Может быть, подойдёт:" }));
-      app.appendChild(h("ul", { class: "list" }, sim.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+      if (sim.length < 3) {
+        var extra = [], cand = [dreamOfDay(new Date())].concat(similarInCat(dreamOfDay(new Date()) || DREAMS[0] || {}, 4));
+        cand.forEach(function (d) { if (d && d.id && sim.indexOf(d) < 0 && extra.indexOf(d) < 0 && extra.length < 3) extra.push(d); });
+        if (extra.length) {
+          app.appendChild(h("h2", { class: "section-title", text: "Почитайте другие сны:" }));
+          app.appendChild(h("ul", { class: "list" }, extra.map(function (d) { return h("li", null, dreamLink(d, true)); })));
+        }
+      }
     }
     app.appendChild(h("p", { style: "margin:18px 0" }, h("a", { class: "btn btn-wide", href: "#cats" }, "Посмотреть все разделы")));
     app.appendChild(searchForm(q, "Поискать другое слово"));
@@ -613,8 +656,7 @@
     body.classList.add("modal-body");
     var closeBtn = h("button", { type: "button", class: "close", "aria-label": "Закрыть" }, icon("close"));
     var box2 = h("div", { class: "modal", role: "dialog", "aria-modal": "true", "aria-labelledby": "modalTitle" }, [
-      h("h2", { id: "modalTitle", text: titleText }),
-      closeBtn,
+      h("div", { class: "modal-head" }, [h("h2", { id: "modalTitle", text: titleText }), closeBtn]),
       body
     ]);
     var overlay = h("div", { class: "overlay" }, box2);
@@ -924,7 +966,7 @@
   }
 
   // Для автотеста.
-  window.Sonnik = { dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, dreamtVerb: dreamtVerb, count: DREAMS.length };
+  window.Sonnik = { dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, count: DREAMS.length };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);
   else start();

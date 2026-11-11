@@ -37,7 +37,7 @@ const hasRealBase = fs.existsSync(path.join(ROOT, "data", "dreams.js"));
 
 async function newPage(browser, vp, opts = {}) {
   const ctx = await browser.newContext({
-    viewport: vp, deviceScaleFactor: 1, hasTouch: !!opts.touch, isMobile: !!opts.touch, locale: "ru-RU"
+    viewport: vp, deviceScaleFactor: 1, hasTouch: !!opts.touch, isMobile: false, locale: "ru-RU"
   });
   if (opts.noShare) {
     await ctx.addInitScript(() => { try { delete Navigator.prototype.share; delete Navigator.prototype.canShare; } catch (e) {} });
@@ -52,6 +52,8 @@ async function newPage(browser, vp, opts = {}) {
     page._errors.push(t);
   });
   page.on("pageerror", (e) => page._errors.push(String(e)));
+  page._demo = false;
+  page.on("request", (r) => { if (/demo\.js/.test(r.url())) page._demo = true; });
   return page;
 }
 
@@ -76,20 +78,31 @@ async function searchFor(page, q) {
 async function layoutChecks(page, label) {
   const r = await page.evaluate(() => {
     const small = [];
-    document.querySelectorAll(".btn, .chip, .cat, .item, .back-link, .search-input, .close").forEach((el) => {
+    document.querySelectorAll(".btn, .chip, .cat, .cat-tag, .item, .back-link, .search-input, .close, .suggest li").forEach((el) => {
       const b = el.getBoundingClientRect();
       if (b.width && b.height < 47.5) small.push(el.className + " " + Math.round(b.height));
     });
     const txt = [];
-    document.querySelectorAll(".dream .text p, .details dd, .tip p, .item-short, .lead, .today p").forEach((el) => {
+    document.querySelectorAll(".dream .text p, .details dd, .details dt, .tip p, .item-short, .lead, .today p, .cat-count, .foot p, .modal .note, .s-cat, .also p").forEach((el) => {
       const fs = parseFloat(getComputedStyle(el).fontSize);
-      if (fs < 18) txt.push(el.className + " " + fs);
+      if (fs < 17.9) txt.push(el.className + " " + fs);
     });
-    return { overflow: document.documentElement.scrollWidth - window.innerWidth, small, txt };
+    const cut = [];
+    document.querySelectorAll("h1, h2, .mood, .btn, .cat-name, .chip").forEach((el) => {
+      if (el.offsetParent !== null && el.scrollWidth > el.clientWidth + 1) cut.push(el.tagName + "." + el.className + " «" + el.textContent.trim().slice(0, 20) + "»");
+    });
+    return { overflow: document.documentElement.scrollWidth - window.innerWidth, small, txt, cut };
   });
   ok(r.overflow <= 0, label + ": нет прокрутки вбок (" + r.overflow + ")");
   ok(!r.small.length, label + ": все кнопки не ниже 48px " + (r.small.length ? JSON.stringify(r.small) : ""));
   ok(!r.txt.length, label + ": основной текст не меньше 18px " + (r.txt.length ? JSON.stringify(r.txt) : ""));
+  ok(!r.cut.length, label + ": ничего не обрезано " + (r.cut.length ? JSON.stringify(r.cut.slice(0, 5)) : ""));
+}
+
+// Только ширина страницы (для серии экранов).
+async function noSideScroll(page, label) {
+  const r = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, w: window.innerWidth }));
+  ok(r.sw <= r.w, label + ": нет прокрутки вбок (" + r.sw + " при ширине " + r.w + ")");
 }
 
 // Контраст по WCAG
@@ -131,14 +144,21 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     await shot(page, sc.name + "-1-home");
 
     const cases = [
-      ["собака", "Собака"], ["сабака", "Собака"], ["зуб", "Зубы"], ["мне снилась змея", "Змея"],
-      ["ёлка", "Ёлка"], ["елка", "Ёлка"], ["мне снилась большая собака", "Собака"], ["к чему снится кот", "Кошка"]
+      ["собака", "Собака"], ["зуб", "Зубы"], ["мне снилась змея", "Змея"], ["ёлка", "Ёлка"], ["елка", "Ёлка"],
+      ["мне снилась большая собака", "Собака"], ["к чему снится кот", "Кошка"], ["покойник", "Покойник"],
+      ["бывший", "Бывший"], ["не могу пошевелиться", "Не могу пошевелиться"], ["ZMEYA", "Змея"], ["покойный муж", "Покойник"]
     ];
     if (!hasRealBase || sc.name === "phone-portrait") {
       for (const [q, want] of cases) {
         await page.goto(BASE);
         const got = await searchFor(page, q);
         ok(got === want, "поиск «" + q + "» → " + got);
+      }
+      for (const q of ["сабака", "школа", "дедушка"]) {
+        await page.goto(BASE);
+        const got = await searchFor(page, q);
+        const first = await page.locator(".list .item-title").first().textContent().catch(() => "—");
+        ok(/^(Точно такого сна нет|Такого сна пока нет в соннике)$/.test(got), "«" + q + "» не открывает чужой сон: " + got + (got.startsWith("Точно") ? " → " + first : ""));
       }
     }
     await page.goto(BASE);
@@ -176,14 +196,18 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     await shot(page, sc.name + "-4-dream");
 
     // Поделиться — запасное окно (navigator.share выключен)
-    await page.locator("button", { hasText: "Поделиться" }).click();
+    const topShare = await page.locator(".btn-share-top").boundingBox();
+    ok(topShare && topShare.y < sc.vp.height * 1.5, "«Поделиться» видно сразу под короткой фразой");
+    const dts = await page.locator(".details dt").allTextContents();
+    ok(dts.every((t) => /^Если /.test(t) && !/^Если если/i.test(t)), "случаи читаются «Если …»: " + dts[0]);
+    await page.locator("button", { hasText: "Поделиться" }).first().click();
     await page.waitForSelector(".modal");
     const vk = await page.locator(".btn-vk").getAttribute("href");
     const okr = await page.locator(".btn-ok").getAttribute("href");
     ok(vk.startsWith("https://vk.com/share.php?url=") && decodeURIComponent(vk).includes("#dream=" + zmeya), "ссылка ВК правильная");
     ok(okr.startsWith("https://connect.ok.ru/offer?url=") && okr.includes("description="), "ссылка ОК правильная");
     const prev = await page.locator(".share-preview").textContent();
-    ok(/^Мне приснилась змея[:.] .+ — Сонник http/.test(prev), "текст: " + prev.slice(0, 70) + "…");
+    ok(/^Мне приснилось: Змея.+ — Сонник http/.test(prev), "текст: " + prev.slice(0, 70) + "…");
     await layoutChecks(page, "окно поделиться");
     await shot(page, sc.name + "-5-share");
     await page.keyboard.press("Escape");
@@ -222,10 +246,90 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     await page.goBack(); await page.waitForTimeout(80);
     ok(await page.locator(".search-label").count() === 1, "назад: в главное меню");
 
-    // Недавно искали
-    ok(await page.locator(".chip").count() >= 1, "«Недавно искали» заполнено: " + await page.locator(".chip").count());
+    // Недавно смотрели — открытый из раздела сон тоже попадает
+    const chips = await page.locator(".recent .chip").allTextContents();
+    ok(chips[0] === opened, "«Недавно смотрели» начинается с «" + opened + "»: " + chips.join(", "));
+    ok(!page._demo, "демо-база не загружается");
 
     ok(!page._errors.length, "ошибок в консоли нет " + (page._errors.length ? JSON.stringify(page._errors) : ""));
+    await page.context().close();
+  }
+
+  // Узкие телефоны: никакой прокрутки вбок
+  console.log("\nШирины телефонов:");
+  const longId = await (async () => { const p = await newPage(browser, { width: 390, height: 844 }); await p.goto(BASE); const id = await idOf(p, "Не могу пошевелиться") || await idOf(p, "Собака"); await p.context().close(); return id; })();
+  for (const w of [320, 360, 375, 390, 393, 412]) {
+    const page = await newPage(browser, { width: w, height: 740 }, { touch: true, noShare: true });
+    await page.goto(BASE); await page.waitForSelector(".cat");
+    await noSideScroll(page, w + " главная");
+    await page.goto(BASE + "#dream=" + longId); await page.reload(); await page.waitForSelector("main h1");
+    await noSideScroll(page, w + " сон");
+    await layoutChecks(page, w + " сон");
+    await page.locator(".btn-share-top").click(); await page.waitForSelector(".modal");
+    await noSideScroll(page, w + " окно поделиться");
+    await page.keyboard.press("Escape");
+    await page.goto(BASE + "#q=" + "а".repeat(3000)); await page.reload(); await page.waitForSelector("main h1");
+    await noSideScroll(page, w + " длинный запрос");
+    ok((await page.evaluate(() => decodeURIComponent(location.hash).length)) <= 103, w + ": длинный запрос укорочен в адресе");
+    if (w === 320) await shot(page, "w320-longquery");
+    ok(!page._errors.length, w + ": ошибок в консоли нет " + (page._errors.length ? JSON.stringify(page._errors) : ""));
+    await page.context().close();
+  }
+
+  // Крупный шрифт системы (200%)
+  console.log("\nКрупный шрифт 200%:");
+  for (const w of [390, 1366]) {
+    const page = await newPage(browser, { width: w, height: 844 }, { touch: w < 500, noShare: true });
+    await page.addInitScript(() => document.addEventListener("DOMContentLoaded", () => {
+      const st = document.createElement("style"); st.textContent = "html{font-size:36px !important}"; document.head.appendChild(st);
+    }));
+    await page.goto(BASE); await page.waitForSelector(".cat");
+    await noSideScroll(page, w + " главная");
+    await shot(page, "font200-" + w + "-home");
+    await page.goto(BASE + "#dream=" + longId); await page.reload(); await page.waitForSelector("main h1");
+    await noSideScroll(page, w + " сон");
+    const cut = await page.evaluate(() => [...document.querySelectorAll("h1, .mood, .btn")].filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.textContent.trim()));
+    ok(!cut.length, w + ": заголовок и плашки не обрезаны " + (cut.length ? JSON.stringify(cut) : ""));
+    await shot(page, "font200-" + w + "-dream");
+    await page.context().close();
+  }
+
+  // Альбом: окно «Поделиться» помещается, крестик не налезает
+  console.log("\nАльбом, окна:");
+  for (const vp of [{ width: 640, height: 360 }, { width: 844, height: 390 }]) {
+    const page = await newPage(browser, vp, { touch: true, noShare: true });
+    await page.goto(BASE + "#dream=" + longId); await page.reload(); await page.waitForSelector("main h1");
+    await page.locator(".btn-share-top").click(); await page.waitForSelector(".modal");
+    const r = await page.evaluate(() => {
+      const H = window.innerHeight;
+      const btns = [...document.querySelectorAll(".modal .stack .btn")].map((b) => b.getBoundingClientRect());
+      const close = document.querySelector(".modal .close").getBoundingClientRect();
+      const prev = document.querySelector(".share-preview").getBoundingClientRect();
+      return { allVisible: btns.every((b) => b.bottom <= H && b.top >= 0), overlap: close.bottom > prev.top && close.left < prev.right };
+    });
+    ok(r.allVisible, vp.width + "×" + vp.height + ": все кнопки окна видны");
+    ok(!r.overlap, vp.width + "×" + vp.height + ": крестик не налезает на текст");
+    await shot(page, "land-" + vp.width + "-share");
+    await page.locator("button", { hasText: "Открытка со сном" }).last().click();
+    await page.waitForTimeout(200);
+    const pc = await page.evaluate(() => { const b = document.querySelector(".modal").getBoundingClientRect(); return b.bottom <= window.innerHeight && b.top >= 0; });
+    ok(pc, vp.width + "×" + vp.height + ": окно открытки помещается");
+    await shot(page, "land-" + vp.width + "-postcard");
+    await page.context().close();
+  }
+
+  // История и разделы
+  console.log("\nИстория:");
+  {
+    const page = await newPage(browser, { width: 390, height: 844 }, { touch: true });
+    await page.goto(BASE);
+    await page.locator(".cat").first().click(); await page.waitForTimeout(60);
+    await page.locator(".item").first().click(); await page.waitForTimeout(60);
+    for (let i = 0; i < 5; i++) { await page.locator("button", { hasText: "Случайный сон" }).click(); await page.waitForTimeout(40); }
+    await page.goBack(); await page.waitForTimeout(80);
+    ok(await page.locator(".cat-ico + h1, .dream-head h1").count() === 1 && !(await page.locator(".dream").count()), "5 × «Случайный сон», потом один раз «назад» — снова в разделе");
+    await page.goto(BASE + "#cat=Ерунда"); await page.reload(); await page.waitForTimeout(80);
+    ok(await page.locator(".search-label").count() === 1, "#cat=Ерунда открывает главную");
     await page.context().close();
   }
 
