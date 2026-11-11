@@ -43,7 +43,7 @@ const srv = http.createServer((req, res) => {
   await page.waitForTimeout(1200);
   await page.evaluate(() => { const n = document.querySelector(".notice"); if (n) n.remove(); window.scrollTo(0, 0); });
   await snap("4-nedelya");
-  await page.evaluate(() => window.scrollBy(0, 560));
+  await page.evaluate(() => { const d = document.querySelectorAll(".week-day")[1]; window.scrollTo(0, d.getBoundingClientRect().top + window.scrollY - 16); });
   await snap("5-nedelya-dni");
   await page.goto(base + "?nobanner#dream=zmeya");
   await page.waitForTimeout(800);
