@@ -25,6 +25,30 @@
   // Корни слов о смерти: с ними ищем Покойника/Свою смерть, без них — не подмешиваем.
   var DEATH_RE = /^(покойн|умер|умир|мертв|усопш|помер|погиб|смерт)/;
   function deathRoot(w) { return DEATH_RE.test(w) ? w.slice(0, 4) : ""; }
+  // Умирает сам человек: «я умерла», «моя смерть», «умираю», «умерла сама».
+  var SELF = new Set("я сам сама сами моя мой мое моё себя собственная собственную своя свою".split(" "));
+  var SELF_VERB = /^(умираю|умру|помираю|погибаю)$/;
+  // Люди, которых нет отдельным сном: с ними «смерть» — это «Покойник».
+  var PERSON = new Set(("человек человека мужчина мужчину женщина женщину друг друга подруга подругу сосед соседа соседка " +
+    "соседку знакомый знакомого знакомая знакомую родственник родственника родственница родственницу родные родных " +
+    "отец отца мать матери тетя тетю дядя дядю дед деда дедуля бабуля внук внучка ребенок ребенка мальчик девочка").split(" "));
+  // «Потеряла ребенка», «потерял мужа»: не открываем «Потерять вещь» сразу — экран выбора.
+  var LOSS_RE = /^(потер|теря)/;
+
+  // Две ошибки допустимы только в длинных словах. В словах до 7 букв — одна, и только
+  // замена гласной на гласную («сабака» → «собака»): «крыша» ≠ «крыса», «машина» ≠ «малина».
+  var VOWELS = "аеиоуыэюяё";
+  function vowelTypo(a, b) {
+    if (a.length !== b.length) return false;
+    var diff = -1;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] !== b[i]) {
+        if (diff >= 0) return false;
+        diff = i;
+      }
+    }
+    return diff > 0 && VOWELS.indexOf(a[diff]) >= 0 && VOWELS.indexOf(b[diff]) >= 0;
+  }
 
   var LAT_PAIRS = [["shch", "щ"], ["sch", "щ"], ["sh", "ш"], ["ch", "ч"], ["zh", "ж"], ["kh", "х"], ["ts", "ц"],
     ["yo", "ё"], ["jo", "ё"], ["yu", "ю"], ["ju", "ю"], ["ya", "я"], ["ja", "я"], ["ye", "е"], ["je", "е"]];
@@ -93,7 +117,9 @@
       var all = [d.title].concat(Array.isArray(d.aliases) ? d.aliases : []);
       var terms = [];
       all.forEach(function (t, i) {
-        var ws = words(t);
+        // Синоним с «~» — «на выбор»: находит сон, но не открывает его сразу (экран выбора).
+        var weak = typeof t === "string" && t.charAt(0) === "~";
+        var ws = words(weak ? t.slice(1) : t);
         var key = ws.filter(function (w) { return !STOP.has(w); });
         if (!key.length) key = ws;
         if (!key.length) return;
@@ -101,7 +127,8 @@
           isTitle: i === 0,
           phrase: ws.join(" "),
           ws: key.map(function (w) { return { w: w, s: stem(w), death: deathRoot(w) }; }),
-          death: key.some(function (w) { return DEATH_RE.test(w); })
+          death: key.some(function (w) { return DEATH_RE.test(w); }),
+          weak: weak
         });
       });
       return { d: d, terms: terms };
@@ -126,12 +153,18 @@
     if (t.s.length >= 4 && qw.indexOf(t.s) === 0) return { s: 46, strong: false };
     // Опечатки: только длинные слова, первая буква совпадает, сравниваем целые слова.
     if (qw.length >= 5 && qw[0] === tw[0]) {
-      var max = qw.length >= 8 ? 2 : 1;
-      var d = lev(qw, tw, max);
-      if (d <= max) return { s: 52 - 6 * d, strong: false };
-      if (suggest && tw.length > qw.length) {
-        d = lev(qw, tw.slice(0, qw.length), max);
-        if (d <= max) return { s: 44 - 4 * d, strong: false };
+      if (qw.length >= 8) {
+        var max = qw.length >= 9 ? 2 : 1;
+        var d = lev(qw, tw, max);
+        if (d <= max) return { s: 52 - 6 * d, strong: false };
+        if (suggest && tw.length > qw.length) {
+          d = lev(qw, tw.slice(0, qw.length), max);
+          if (d <= max) return { s: 44 - 4 * d, strong: false };
+        }
+      } else {
+        // 6–7 букв: целое слово с одной заменой гласной; 5 букв — только начало в подсказках («сабак…»).
+        if (qw.length >= 6 && vowelTypo(qw, tw)) return { s: 46, strong: false };
+        if (suggest && tw.length > qw.length && vowelTypo(qw, tw.slice(0, qw.length))) return { s: 40, strong: false };
       }
     }
     return null;
@@ -154,7 +187,9 @@
     index.forEach(function (e) {
       var per = qinfo.map(function () { return null; });
       var bonus = 0, deathHit = false;
+      var tWeak = false;
       function put(qi, s, strong) {
+        if (tWeak && strong) { strong = false; s = Math.min(s, 70); }
         var cur = per[qi];
         if (!cur || (strong && !cur.strong) || (strong === cur.strong && s > cur.s)) per[qi] = { s: s, strong: strong };
       }
@@ -162,6 +197,7 @@
         if (t.death && !qHasDeath && !(opts.suggest && t.ws.some(function (tw) {
           return qinfo.some(function (qq) { return qq.w.length >= 3 && tw.w.indexOf(qq.w) === 0; });
         }))) return;
+        tWeak = !!t.weak;
         var tb = t.isTitle ? 4 : 0;
         if (t.ws.length === 1) {
           tb += 3;
@@ -178,12 +214,10 @@
             }
             return null;
           });
+          // Совпало только одно слово из нескольких («дом» в «родильный дом») — это не тот сон:
+          // такие частичные совпадения не показываем ни в вариантах, ни в подсказках.
           var all = hits.every(Boolean);
-          hits.forEach(function (hh) {
-            if (!hh) return;
-            if (all) put(hh.qi, hh.s + tb, true);
-            else put(hh.qi, hh.s === 100 ? 55 : 50, false);
-          });
+          if (all) hits.forEach(function (hh) { put(hh.qi, hh.s + tb, true); });
           if (all) bonus = Math.max(bonus, 12);
           if (opts.suggest && t.isTitle && rawNorm.length >= 3 && t.phrase.indexOf(rawNorm) === 0) put(qinfo.length - 1, 75, false);
         }
@@ -207,10 +241,34 @@
       out.push({ d: e.d, score: best + 0.35 * (sum - best) + bonus, strong: strong, deathHit: deathHit });
     });
 
-    // «Умер отец», «умерла бабушка»: если в запросе есть и родня — это Покойник, а не своя смерть.
+    var rawWs = words(q);
+    var personHit = out.some(function (r) { return r.strong && !r.deathHit && r.d.cat === "Люди и родня"; }) ||
+      rawWs.some(function (w) { return PERSON.has(w); });
+
+    // Смерть: умирает сам человек — «Своя смерть»; умирает кто-то другой — «Покойник».
     if (qHasDeath) {
-      var kin = out.some(function (r) { return r.strong && !r.deathHit && r.d.cat === "Люди и родня"; });
-      if (kin) out.forEach(function (r) { if (r.deathHit && r.d.cat === "Люди и родня") r.score += 15; });
+      var self = rawWs.some(function (w) { return SELF.has(w) || SELF_VERB.test(w); });
+      var other = !self && personHit;
+      if (self || other) {
+        // «Покойник» — сон о смерти из раздела «Люди и родня», «Своя смерть» — остальные сны о смерти.
+        index.forEach(function (e) {
+          if (!e.terms.some(function (t) { return t.death; })) return;
+          var isOther = e.d.cat === "Люди и родня";
+          var r = out.filter(function (x) { return x.d === e.d; })[0];
+          if (isOther === other) {
+            if (!r) { r = { d: e.d, score: 0, strong: true, deathHit: true }; out.push(r); }
+            r.strong = true; r.score = Math.max(r.score, 100) + 60;
+          } else if (r) {
+            r.drop = true;              // другой сон о смерти здесь не к месту — не показываем
+          }
+        });
+        out = out.filter(function (x) { return !x.drop; });
+      }
+    }
+
+    // «Потеряла ребенка»: потеря + человек — не открываем «Потерять вещь» сразу, а даём выбор.
+    if (personHit && qinfo.some(function (x) { return LOSS_RE.test(x.w); })) {
+      out.forEach(function (r) { r.strong = false; });
     }
 
     out.sort(function (a, b) {

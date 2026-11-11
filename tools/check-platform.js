@@ -151,7 +151,7 @@ async function unlockWeek(page) {
   }
 
   console.log("\nБаннер не закрывает текст и кнопки:");
-  for (const vp of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
+  for (const vp of [{ width: 390, height: 844 }, { width: 844, height: 390 }, { width: 320, height: 568 }, { width: 1366, height: 768 }]) {
     const label = vp.width + "×" + vp.height;
     const page = await open(browser, BASE + "?fakeadsec=1", vp, { touch: true });
     await bannerClear(page, label + " главная");
