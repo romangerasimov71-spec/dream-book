@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Сонник — что означает ваш сон</title>
+  <meta name="description" content="Сонник: напишите, что вам приснилось, и прочитайте толкование. Сон дня, разделы, частые сны.">
+  <meta name="theme-color" content="#0b1433">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b1433'/%3E%3Cpath d='M40 12a22 22 0 1 0 12 30A18 18 0 0 1 40 12z' fill='%23f2c46d'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <canvas id="sky" aria-hidden="true"></canvas>
+
+  <div class="wrap">
+    <header class="top">
+      <a href="#" class="brand" id="brand" aria-label="Сонник — на главную">
+        <svg class="brand-moon" viewBox="0 0 48 48" aria-hidden="true">
+          <defs>
+            <radialGradient id="moonGlow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#ffe7a8" stop-opacity=".55"/>
+              <stop offset="100%" stop-color="#ffe7a8" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+          <circle cx="24" cy="24" r="23" fill="url(#moonGlow)"/>
+          <path d="M29 9a15 15 0 1 0 10 25A12.5 12.5 0 0 1 29 9z" fill="#f6d27f"/>
+        </svg>
+        <span class="brand-name">Сонник</span>
+      </a>
+    </header>
+
+    <main id="app" tabindex="-1">
+      <noscript><p class="lead">Чтобы открыть сонник, включите JavaScript в браузере.</p></noscript>
+    </main>
+
+    <footer class="foot">
+      <p>Толкования — для развлечения и размышлений, не предсказание и не совет врача.</p>
+      <p id="demoNote" class="demo-note" hidden></p>
+    </footer>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="data/dreams.js"></script>
+  <script src="data/demo.js"></script>
+  <script src="search.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
