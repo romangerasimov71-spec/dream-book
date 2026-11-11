@@ -366,6 +366,59 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
     }
   }
 
+  // Круг проверки 11 ноя: подпись кнопки в ряду — в одну строку, иначе ряд в одну колонку;
+  // при шрифте 200% на 320–360 ничего не вылезает вбок, слова не рвутся, крестик окна на экране.
+  console.log("\nКнопки в одну строку и крупный шрифт на узких телефонах:");
+  {
+    const { devices } = require("playwright");
+    const variants = [{ name: "iPhone 13", dev: devices["iPhone 13"] }, { name: "iPhone SE", dev: devices["iPhone SE"] }];
+    for (const w of [412, 390, 375, 360, 320]) variants.push({ name: w + "px", vp: { width: w, height: 568 } });
+    const ids = await (async () => { const p = await newPage(browser, { width: 390, height: 844 }); await p.goto(BASE); const r = [await idOf(p, "Не могу пошевелиться"), await idOf(p, "День рождения"), await idOf(p, "Змея")]; await p.context().close(); return r; })();
+    for (const v of variants) {
+      for (const big of [false, true]) {
+        const ctx = v.dev ? await browser.newContext({ ...v.dev, locale: "ru-RU" })
+          : await browser.newContext({ viewport: v.vp, deviceScaleFactor: 1, hasTouch: true, locale: "ru-RU" });
+        await ctx.addInitScript(() => { try { delete Navigator.prototype.share; delete Navigator.prototype.canShare; } catch (e) {} });
+        if (big) await ctx.addInitScript(() => document.addEventListener("DOMContentLoaded", () => {
+          const st = document.createElement("style"); st.textContent = "html{font-size:36px !important}"; document.head.appendChild(st);
+        }));
+        const page = await ctx.newPage();
+        const label = v.name + (big ? " шрифт 200%" : "");
+        const probs = [];
+        const look = async (where) => {
+          await page.waitForTimeout(120);
+          const r = await page.evaluate(() => {
+            const out = [];
+            if (document.documentElement.scrollWidth > window.innerWidth) out.push("вбок +" + (document.documentElement.scrollWidth - window.innerWidth));
+            document.querySelectorAll(".btn-row .btn, .modal .stack .btn").forEach((el) => {
+              if (el.offsetParent === null) return;
+              if (getComputedStyle(el.parentElement).gridTemplateColumns.split(" ").length < 2) return;
+              const tops = new Set(); const wk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let n;
+              while ((n = wk.nextNode())) { const rg = document.createRange(); rg.selectNodeContents(n); [...rg.getClientRects()].filter((x) => x.width > 1).forEach((x) => tops.add(Math.round(x.top))); }
+              if (tops.size > 1) out.push("в 2 строки: " + el.textContent.trim());
+            });
+            document.querySelectorAll(".btn, h1, h2, .item-title, .cat-name, .chip, .week-title").forEach((el) => {
+              if (el.offsetParent === null) return;
+              const wk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let n;
+              while ((n = wk.nextNode())) { const re = /\S+/g; let m; while ((m = re.exec(n.data))) { const rg = document.createRange(); rg.setStart(n, m.index); rg.setEnd(n, m.index + m[0].length); if ([...rg.getClientRects()].filter((x) => x.width > 0.5).length > 1) out.push("разорвано: " + m[0]); } }
+            });
+            const c = document.querySelector(".modal .close");
+            if (c) { const b = c.getBoundingClientRect(); if (b.right > window.innerWidth || b.left < 0) out.push("крестик за краем"); }
+            return out;
+          });
+          r.forEach((x) => probs.push(where + ": " + x));
+        };
+        await page.goto(BASE); await page.waitForSelector(".cat"); await look("главная");
+        for (const c of ["Люди и родня", "Животные"]) { await page.goto(BASE + "#cat=" + encodeURIComponent(c)); await page.reload(); await page.waitForSelector(".item"); await look(c); }
+        for (const id of ids) { await page.goto(BASE + "#dream=" + id); await page.reload(); await page.waitForSelector("main h1"); await look(id); }
+        await page.locator(".btn-share-top").click(); await page.waitForSelector(".modal"); await look("окно поделиться");
+        await page.locator(".modal button", { hasText: "Открытка со сном" }).click(); await look("окно открытки");
+        ok(!probs.length, label + ": кнопки в одну строку, ничего вбок, слова целые, крестик на экране " + (probs.length ? JSON.stringify([...new Set(probs)].slice(0, 6)) : ""));
+        await ctx.close();
+      }
+    }
+  }
+
   // Альбом: окно «Поделиться» помещается, крестик не налезает
   console.log("\nАльбом, окна:");
   for (const vp of [{ width: 640, height: 360 }, { width: 844, height: 390 }]) {

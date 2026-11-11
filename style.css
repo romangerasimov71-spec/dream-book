@@ -168,6 +168,13 @@ h1:focus, h2:focus { outline: none; }
 .btn-row .btn { padding-left: 12px; padding-right: 12px; gap: 8px; }
 /* Подпись не влезла в половину ширины — app.js ставит кнопки ряда в одну колонку. */
 .btn-row.one-col, .modal .stack.one-col { grid-template-columns: 1fr; }
+/* Временные классы для замеров в app.js (fitButtons, fitWords). */
+.measure-nowrap .btn { white-space: nowrap !important; }
+.measure-words :is(h1, h2, .item-title > span, .cat-name, .week-title, .chip, .mood, .search-label) { overflow-wrap: normal !important; word-break: normal !important; }
+.item-title > span, .modal-head h2 { min-width: 0; }
+.btn { max-width: 100%; }
+.tip > div, .week-invite-head h2 { min-width: 0; }
+.item-title { min-width: 0; max-width: 100%; }
 /* Крайний случай (очень узко и очень крупно): ужимаем поля кнопки. */
 .btn.btn-tight, .modal .stack .btn.btn-tight { padding-left: 8px; padding-right: 8px; gap: 6px; }
 

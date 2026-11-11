@@ -120,9 +120,20 @@
   var store = {};
   store[KEY_RECENT] = [];
   store[KEY_WEEK] = null;
-  function saveKeys(obj) {
-    Object.keys(obj).forEach(function (k) { store[k] = obj[k]; });
-    if (PF) PF.save(obj);
+  // Пишем в хранилище не чаще раза в несколько секунд: изменения копятся и уходят одним вызовом.
+  // now = true — сразу (неделя за рекламу). При сворачивании/закрытии — тоже сразу.
+  var pendingSave = {}, saveTimer = 0, SAVE_DELAY = 4000;
+  function flushSave() {
+    clearTimeout(saveTimer); saveTimer = 0;
+    var keys = Object.keys(pendingSave);
+    if (!keys.length || !PF) return;
+    var o = pendingSave; pendingSave = {};
+    PF.save(o);
+  }
+  function saveKeys(obj, now) {
+    Object.keys(obj).forEach(function (k) { store[k] = obj[k]; pendingSave[k] = obj[k]; });
+    if (now) flushSave();
+    else if (!saveTimer) saveTimer = setTimeout(flushSave, SAVE_DELAY);
   }
 
   function seeded(seed) {
@@ -149,6 +160,11 @@
   }
 
   var toastTimer;
+  function hideToast() {
+    clearTimeout(toastTimer);
+    var t = document.getElementById("toast");
+    if (t) t.classList.remove("show");
+  }
   function toast(msg, ms) {
     var t = document.getElementById("toast");
     t.textContent = msg;
@@ -264,6 +280,12 @@
     var r = parseHash();
     if (r.name === "cat" && CATS.indexOf(r.cat) < 0) {
       // Неизвестный раздел — просто главная.
+      try { history.replaceState({ depth: depth() }, "", location.href.split("#")[0]); } catch (e) { /* ничего */ }
+      lastHash = location.hash;
+      r = { name: "home" };
+    }
+    if (r.name === "week" && !weekAvailable()) {
+      // Реклама за награду здесь недоступна, а неделя не открыта — нечего обещать: главная.
       try { history.replaceState({ depth: depth() }, "", location.href.split("#")[0]); } catch (e) { /* ничего */ }
       lastHash = location.hash;
       r = { name: "home" };
@@ -523,12 +545,14 @@
   function weekInvite(src) {
     if (!DREAMS.length || !weekAvailable()) return null;
     var st = weekState();
+    var text = st.open ? "Открыт до " + weekUntilLabel() + " включительно: сны дня на 7 дней вперёд с советом на каждый день."
+      : st.expired ? "Ваша неделя закончилась — откройте новую."
+      : "Сны дня на 7 дней вперёд — с коротким советом на каждый день.";
     return h("section", { class: "card week-invite", id: src === "home" ? "weekInvite" : null, "aria-labelledby": "weekInvTitle-" + src }, [
       h("div", { class: "week-invite-head" }, [icon("calendar"), h("h2", { id: "weekInvTitle-" + src, text: "Мой сонник на неделю" })]),
-      h("p", { text: st.open
-        ? "Открыт до " + weekUntilLabel() + " включительно: сны дня на 7 дней вперёд с советом на каждый день."
-        : "Сны дня на 7 дней вперёд — с коротким советом на каждый день." }),
-      h("a", { class: "btn btn-wide" + (st.open ? " btn-primary" : ""), href: "#week", "data-src": src }, st.open ? "Смотреть мою неделю" : "Узнать, что ждёт на неделе")
+      h("p", { text: text }),
+      h("a", { class: "btn btn-wide" + (st.open ? " btn-primary" : ""), href: "#week", "data-src": src },
+        st.open ? "Смотреть мою неделю" : st.expired ? "Открыть новую неделю" : "Узнать, что ждёт на неделе")
     ]);
   }
 
@@ -540,8 +564,7 @@
   var AD_FAIL_TEXT = {
     closed: "Реклама закрыта раньше конца — неделя не открылась. Можно попробовать ещё раз.",
     error: "Реклама сейчас недоступна. Попробуйте чуть позже.",
-    timeout: "Реклама не загрузилась. Попробуйте чуть позже.",
-    late: "Реклама пришла слишком поздно, поэтому неделя не открылась. Попробуйте ещё раз."
+    timeout: "Реклама не загрузилась. Попробуйте чуть позже."
   };
 
   function renderWeek(app, src) {
@@ -571,12 +594,12 @@
       app.appendChild(h("p", { style: "margin:18px 0" }, h("a", { class: "btn btn-wide", href: "#" }, "На главную")));
       return t;
     }
-    var available = PF && PF.rewardedAvailable();
-    var adBtn = h("button", { type: "button", class: "btn btn-primary btn-wide", id: "weekAdBtn" }, available ? "Смотреть рекламу и открыть" : "Пока недоступно");
-    if (!available) adBtn.disabled = true;
+    // Сюда попадаем, только если реклама за награду доступна (иначе render() открывает главную).
+    var adBtn = h("button", { type: "button", class: "btn btn-primary btn-wide", id: "weekAdBtn" }, st.expired ? "Смотреть рекламу и открыть новую" : "Смотреть рекламу и открыть");
     if (src && src !== "rerender") weekSrc = src;
     adBtn.addEventListener("click", function () { startWeekAd(weekSrc); });
     app.appendChild(h("div", { class: "card week-head" }, [t,
+      st.expired ? h("p", { class: "lead week-expired", text: "Ваша неделя закончилась — откройте новую." }) : null,
       h("p", { class: "lead", text: "Сны дня на 7 дней вперёд — с коротким советом на каждый день." }),
       h("ul", { class: "week-points" }, [
         h("li", { text: "Посмотрите короткую рекламу — неделя откроется сразу." }),
@@ -586,7 +609,7 @@
     ]));
     if (notice) app.appendChild(notice);
     app.appendChild(h("div", { class: "actions" }, [adBtn, h("a", { class: "btn btn-wide", href: "#" }, "На главную")]));
-    if (available && src && src !== "rerender") AN.event("week_offer_shown", { source: src });
+    if (src && src !== "rerender") AN.event("week_offer_shown", { source: src });
     return t;
   }
 
@@ -623,44 +646,64 @@
     };
   }
 
+  function onWeekScreen() { return parseHash().name === "week" && !modal; }
+  function rerenderWeek() {
+    if (!onWeekScreen()) return;
+    var y = window.scrollY;
+    pendingSource = "rerender";
+    render(true);
+    window.scrollTo(0, y);
+  }
+  // Сообщение на экране недели — только если человек сейчас на нём (не оставляем устаревших).
+  function weekMessage(kind, text) {
+    if (parseHash().name !== "week") { weekNotice = null; return; }
+    weekNotice = { kind: kind, text: text };
+    rerenderWeek();
+  }
+
+  function grantWeek(src, late) {
+    adGrants++;
+    var o = {}; o[KEY_WEEK] = { from: dayNumber(new Date()) };
+    saveKeys(o, true);
+    AN.event("week_unlocked", { source: src, late: !!late });
+    hideToast();
+    weekNotice = { kind: "ok", text: "Готово! Сонник на неделю открыт до " + weekUntilLabel() + " включительно." };
+    refreshInvite();
+    if (modal) closeModal();
+    pendingSource = "rerender";
+    if (parseHash().name === "week") render(true); else navigate("week");
+  }
+
+  var cancelledByBack = false;
   function startWeekAd(src) {
     if (adBusy || !PF || weekState().open) return;
     adBusy = true;
-    if (PF.banner) PF.banner.hide();
+    cancelledByBack = false;
+    updateBanner();
     var done = adWaitOverlay();
     PF.showRewarded({
       placement: "week",
-      onLate: function () {
-        AN.event("ad_reward_failed", { reason: "late" });
-        weekNotice = { kind: "fail", text: AD_FAIL_TEXT.late };
-        toast(AD_FAIL_TEXT.late, 5000);
-        if (parseHash().name === "week") { pendingSource = "rerender"; render(true); }
+      // Реклама опоздала (открылась после «не загрузилась» или «Отмены»): убираем сообщение,
+      // досмотрел до конца — неделя открывается.
+      onLateOpen: function () { weekNotice = null; hideToast(); var n = document.querySelector(".notice"); if (n) n.remove(); },
+      onLateReward: function () { grantWeek(src, true); },
+      onLateFail: function (reason) {
+        AN.event("ad_reward_failed", { reason: reason, late: true });
+        toast(AD_FAIL_TEXT[reason] || AD_FAIL_TEXT.error, 4500);
+        weekMessage("fail", AD_FAIL_TEXT[reason] || AD_FAIL_TEXT.error);
       }
     }).then(function (res) {
       done();
       adBusy = false;
-      if (PF.banner && !modal) PF.banner.show();
-      if (res && res.ok) {
-        adGrants++;
-        var o = {}; o[KEY_WEEK] = { from: dayNumber(new Date()) };
-        saveKeys(o);
-        AN.event("week_unlocked", { source: src });
-        weekNotice = { kind: "ok", text: "Готово! Сонник на неделю открыт до " + weekUntilLabel() + " включительно." };
-        refreshInvite();
-        pendingSource = "rerender";
-        if (parseHash().name === "week") render(true); else navigate("week");
-        return;
-      }
+      updateBanner();
+      if (res && res.ok) { grantWeek(src, false); return; }
       var reason = res && AD_FAIL_TEXT[res.reason] ? res.reason : "error";
-      AN.event("ad_reward_failed", { reason: reason });
-      weekNotice = { kind: "fail", text: AD_FAIL_TEXT[reason] };
+      AN.event("ad_reward_failed", { reason: reason, late: false });
+      if (cancelledByBack) { weekNotice = null; return; }   // ушёл «Назад» — сообщать некому
       toast(AD_FAIL_TEXT[reason], 4500);
-      if (parseHash().name === "week") {
-        pendingSource = "rerender";
-        render(true);
-        var b = document.getElementById("weekAdBtn");
-        if (b) b.focus({ preventScroll: true });
-      }
+      weekMessage("fail", AD_FAIL_TEXT[reason]);
+      var b = document.getElementById("weekAdBtn");
+      if (b && onWeekScreen()) b.focus({ preventScroll: true });
     });
   }
 
@@ -895,9 +938,8 @@
     document.addEventListener("keydown", onKey);
     document.getElementById("modalRoot").appendChild(overlay);
     document.body.style.overflow = "hidden";
-    // Баннер не мешает окнам: пока окно открыто, баннера нет.
-    if (PF && PF.banner) PF.banner.hide();
     modal = { overlay: overlay, opener: opener, onKey: onKey, url: null };
+    updateBanner();   // баннер не мешает окнам: пока окно открыто, баннера нет
     try { history.pushState({ depth: depth(), modal: true }, "", location.href); } catch (e) { /* без истории тоже работает */ }
     var first = focusables(body)[0] || closeBtn;
     first.focus();
@@ -910,10 +952,40 @@
     document.removeEventListener("keydown", m.onKey);
     m.overlay.remove();
     document.body.style.overflow = "";
-    if (PF && PF.banner && !adBusy) PF.banner.show();
+    updateBanner();
     if (m.url) { try { URL.revokeObjectURL(m.url); } catch (e) { /* ничего */ } }
     if (m.opener && document.contains(m.opener)) m.opener.focus();
     if (!fromHistory && history.state && history.state.modal) history.back();
+  }
+
+  /* ================= баннер ================= */
+
+  // Баннер виден, только когда ничего ему не мешает: нет окна, не ждём рекламу,
+  // не открыта экранная клавиатура (иначе поднятый баннер закрывает подсказки поиска).
+  var kbdOpen = false;
+  function updateBanner() {
+    if (!PF || !PF.banner) return;
+    if (ready && !modal && !adBusy && !kbdOpen) PF.banner.show(); else PF.banner.hide();
+  }
+  function watchKeyboard() {
+    var focused = false;
+    function check() {
+      var vv = window.visualViewport;
+      var small = !!(vv && vv.height < window.innerHeight * 0.8);
+      var now = focused || small;
+      if (now !== kbdOpen) { kbdOpen = now; updateBanner(); }
+    }
+    document.addEventListener("focusin", function (e) {
+      if (e.target && e.target.matches && e.target.matches("input, textarea")) { focused = true; check(); }
+    });
+    document.addEventListener("focusout", function () {
+      setTimeout(function () {
+        var a = document.activeElement;
+        focused = !!(a && a.matches && a.matches("input, textarea"));
+        check();
+      }, 50);
+    });
+    if (window.visualViewport) window.visualViewport.addEventListener("resize", check);
   }
 
   /* ================= кнопки: слова не рвём ================= */
@@ -927,9 +999,15 @@
     var i, j;
     for (i = 0; i < rows.length; i++) rows[i].classList.remove("one-col");
     for (i = 0; i < btns.length; i++) { btns[i].classList.remove("btn-tight"); btns[i].style.fontSize = ""; }
+    // Ряд кнопок: подпись должна влезать в ОДНУ строку («Случайный сон» не делится на две).
+    // Меряем с запретом переноса; не влезла — весь ряд встаёт в одну колонку.
     for (i = 0; i < rows.length; i++) {
+      rows[i].classList.add("measure-nowrap");
       var kids = rows[i].querySelectorAll(".btn");
-      for (j = 0; j < kids.length; j++) if (overflows(kids[j])) { rows[i].classList.add("one-col"); break; }
+      var bad = false;
+      for (j = 0; j < kids.length; j++) if (kids[j].offsetParent !== null && kids[j].scrollWidth > kids[j].clientWidth) { bad = true; break; }
+      rows[i].classList.remove("measure-nowrap");
+      if (bad) rows[i].classList.add("one-col");
     }
     var tight = [];
     for (i = 0; i < btns.length; i++) if (overflows(btns[i])) { btns[i].classList.add("btn-tight"); tight.push(btns[i]); }
@@ -942,11 +1020,34 @@
       }
     });
   }
+  // Заголовки, названия снов, разделы: если одно слово шире строки (узкий экран и шрифт 200%),
+  // не рвём слово, а уменьшаем шрифт этого элемента (не меньше чем вдвое).
+  var WORD_FIT = "h1, h2, .item-title > span, .cat-name, .week-title, .chip, .mood, .search-label";
+  function fitWords() {
+    var els = document.querySelectorAll(WORD_FIT), i;
+    for (i = 0; i < els.length; i++) if (els[i].style.fontSize) els[i].style.fontSize = "";
+    var root = document.documentElement;
+    root.classList.add("measure-words");
+    for (i = 0; i < els.length; i++) {
+      var el = els[i];
+      var tooWide = function () { return el.offsetParent !== null && el.scrollWidth > el.clientWidth; };
+      if (!tooWide()) continue;
+      var base = parseFloat(getComputedStyle(el).fontSize);
+      for (var k = 0; k < 8 && tooWide(); k++) {
+        var fs = parseFloat(getComputedStyle(el).fontSize);
+        var next = Math.min(fs - 1, Math.floor(fs * Math.max(0.85, (el.clientWidth - 2) / el.scrollWidth)));
+        if (next < base * 0.5) next = Math.ceil(base * 0.5);
+        if (next >= fs) break;
+        el.style.fontSize = next + "px";
+      }
+    }
+    root.classList.remove("measure-words");
+  }
   var fitQueued = false;
   function queueFit() {
     if (fitQueued) return;
     fitQueued = true;
-    (window.requestAnimationFrame || setTimeout)(function () { fitQueued = false; fitButtons(); });
+    (window.requestAnimationFrame || setTimeout)(function () { fitQueued = false; fitWords(); fitButtons(); });
   }
   function watchButtons() {
     if (window.MutationObserver) new MutationObserver(queueFit).observe(document.body, { childList: true, subtree: true });
@@ -1241,6 +1342,7 @@
     var old = document.getElementById("today");
     if (old) old.parentNode.replaceChild(todayCard(), old);
     refreshInvite();
+    if (!adBusy) rerenderWeek();   // экран недели — тоже новый день (и «неделя закончилась»)
   }
 
   function start() {
@@ -1263,6 +1365,8 @@
     });
 
     window.addEventListener("popstate", function () {
+      // «Назад», пока ждём рекламу, — это «Отмена».
+      if (adBusy && PF && PF.isWaitingRewarded && PF.isWaitingRewarded()) { cancelledByBack = true; weekNotice = null; PF.cancelRewarded(); }
       if (modal) { closeModal(true); return; }
       render();
     });
@@ -1270,7 +1374,9 @@
 
     var resizeTimer;
     window.addEventListener("resize", function () { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawSky, 150); });
-    document.addEventListener("visibilitychange", function () { if (!document.hidden) refreshToday(); });
+    document.addEventListener("visibilitychange", function () { if (document.hidden) flushSave(); else refreshToday(); });
+    window.addEventListener("pagehide", flushSave);
+    watchKeyboard();
 
     if (window.DREAMS_DEMO) {
       var note = document.getElementById("demoNote");
@@ -1289,10 +1395,10 @@
       AN.event("app_opened", { entry: parseHash().name, returning: getRecent().length > 0 || !!store[KEY_WEEK] });
       render(true);
       scheduleMidnight();
-      if (PF && PF.banner) PF.banner.show();
+      ready = true;
+      updateBanner();
       if (PF) PF.gameReady();
       AN.ready();
-      ready = true;
     });
   }
   var ready = false;

@@ -21,10 +21,12 @@
  *   Platform.showRewarded(opts) — показать рекламу за награду. Ответ — Promise:
  *                                { ok: true } — досмотрена до конца (только тогда награда!);
  *                                { ok: false, reason } — 'closed' (закрыли раньше), 'error',
- *                                'timeout' (площадка не ответила за opts.waitMs).
- *                                Если реклама всё же откроется после 'timeout', вызывается
- *                                opts.onLate() — награды за такую рекламу нет.
- *   Platform.cancelRewarded()  — человек сам передумал ждать рекламу (кнопка «Отмена»).
+ *                                'timeout' (площадка не открыла рекламу за opts.waitMs).
+ *                                Реклама «опоздала» (открылась после 'timeout' или после
+ *                                cancelRewarded): opts.onLateOpen() — началась (убрать сообщение
+ *                                «не загрузилась»); opts.onLateReward() — досмотрена, награду
+ *                                ДАТЬ (один раз); opts.onLateFail(reason) — закрыта раньше / ошибка.
+ *   Platform.cancelRewarded()  — человек сам передумал ждать рекламу («Отмена», «Назад»).
  *   Platform.banner.show() / .hide() — баннер внизу. Пока баннер на экране, у <html> есть
  *                                класс has-banner и CSS-переменная --banner-h (сколько места
  *                                оставить снизу), чтобы баннер не закрывал текст и кнопки.
@@ -36,9 +38,11 @@
  *   Platform.payload           — данные из ссылки запуска (во ВК: всё после # в адресе).
  *   Platform.isPaused() / onPause(fn) — площадка поставила паузу (реклама, свернули вкладку).
  *
- * Без площадки (обычный браузер, GitHub Pages) реклама за награду — имитация: своё окно
- * «здесь будет реклама» с отсчётом и кнопкой «Закрыть». Для проверки всех случаев можно
- * открыть страницу с ?fakead=cancel | fail | silent | late (и ?fakeadsec=1 — короткий отсчёт).
+ * Без площадки реклама за награду и баннер — имитация: своё окно «здесь будет реклама»
+ * с отсчётом и серая полоска внизу. Имитация включается ТОЛЬКО на проверочных адресах:
+ * *.github.io, localhost, 127.0.0.1 и при открытии файлом. На любом другом адресе (например,
+ * внутри ВК/ОК, если Bridge не поднялся) рекламы нет: rewardedAvailable() = false, баннера нет.
+ * Для проверки всех случаев: ?fakead=cancel | fail | silent | late (и ?fakeadsec=1).
  */
 (function () {
   "use strict";
@@ -63,6 +67,13 @@
   function query(name) {
     return safe(function () { return new URLSearchParams(location.search).get(name); }, null);
   }
+  // Проверочный адрес: здесь можно показывать имитацию рекламы.
+  function testHost() {
+    if (location.protocol === "file:") return true;
+    var h = String(location.hostname || "").toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "" || /(^|\.)github\.io$/.test(h);
+  }
+  P.isTestHost = testHost;
 
   /* ---------------- запуск ---------------- */
 
@@ -70,6 +81,10 @@
     opts = opts || {};
     LS_PREFIX = opts.localPrefix || "";
     var timeoutMs = opts.timeoutMs || 8000;
+    // Общий предел от начала загрузки страницы (opts.deadlineMs, по умолчанию 10 с): если
+    // скрипт Bridge грузился долго, на initialize остаётся меньше времени.
+    var since = (window.performance && performance.now) ? performance.now() : 0;
+    timeoutMs = Math.max(500, Math.min(timeoutMs, (opts.deadlineMs || 10000) - since));
     var b = window.bridge;
     var started = new Promise(function (resolve) {
       if (!b || typeof b.initialize !== "function") { resolve(false); return; }
@@ -155,7 +170,11 @@
       return out;
     };
     if (!P.hasBridge || !safe(function () { return bridge.storage; }, null)) return Promise.resolve(fromLocal());
-    return Promise.resolve().then(function () { return bridge.storage.get(keys.slice()); }).then(function (data) {
+    // Хранилище площадки молчит дольше 4 с — запускаемся без сохранённого (localStorage).
+    var slow = new Promise(function (res) { setTimeout(function () { res("__slow"); }, 4000); });
+    var got = Promise.resolve().then(function () { return bridge.storage.get(keys.slice()); });
+    return Promise.race([got, slow]).then(function (data) {
+      if (data === "__slow") return fromLocal();
       var out = {};
       keys.forEach(function (k, i) {
         var v = Array.isArray(data) ? data[i] : (data && typeof data === "object" ? data[k] : null);
@@ -185,7 +204,7 @@
 
   function rewardedMode() {
     if (P.hasBridge && safe(function () { return bridge.advertisement.isRewardedSupported; }, false)) return "bridge";
-    return P.isReal ? "none" : "fake";
+    return !P.isReal && testHost() ? "fake" : "none";
   }
   P.rewardedAvailable = function () { return rewardedMode() !== "none"; };
 
@@ -200,12 +219,18 @@
     var r = req;
     if (!r) return;                      // «rewarded» без просьбы игрока — ничего не даём
     if (r.status === "done") {
-      // Мы уже ответили (не дождались). Реклама всё-таки пришла — награды нет, только сообщаем.
-      if (r.late === null && r.timedOut && (state === "opened" || state === "rewarded")) {
-        r.late = true;
-        if (r.onLate) safe(function () { r.onLate(); });
+      // Мы уже ответили «не дождались» (timeout / «Отмена»). Реклама всё-таки пришла:
+      // если её досмотрят до конца — награда положена (человек её честно посмотрел).
+      if (!r.timedOut) return;
+      if (state === "opened" && !r.lateOpened) { r.lateOpened = true; if (r.onLateOpen) safe(r.onLateOpen); return; }
+      if (state === "rewarded") { r.rewarded = true; return; }
+      if (state === "closed" || state === "failed") {
+        req = null;
+        if (r.lateDone) return;
+        r.lateDone = true;
+        if (r.rewarded) { if (r.onLateReward) safe(r.onLateReward); }
+        else if (r.lateOpened && r.onLateFail) safe(function () { r.onLateFail(state === "failed" ? "error" : "closed"); });
       }
-      if (state === "closed" || state === "failed") req = null;
       return;
     }
     if (state === "loading") return;
@@ -221,8 +246,8 @@
     if (mode === "none") return Promise.resolve({ ok: false, reason: "error" });
     if (req && req.status !== "done") return req.promise;   // уже ждём рекламу — второй раз не просим
     var waitMs = opts.waitMs || (cfg.REWARDED_WAIT_SEC || 12) * 1000;
-    var r = { id: ++reqSeq, status: "waiting", rewarded: false, timedOut: false, late: null,
-      onOpen: opts.onOpen, onLate: opts.onLate, timer: 0 };
+    var r = { id: ++reqSeq, status: "waiting", rewarded: false, timedOut: false, lateOpened: false, lateDone: false,
+      onOpen: opts.onOpen, onLateOpen: opts.onLateOpen, onLateReward: opts.onLateReward, onLateFail: opts.onLateFail, timer: 0 };
     r.promise = new Promise(function (resolve) { r.resolve = resolve; });
     req = r;
     r.timer = setTimeout(function () {
@@ -243,10 +268,12 @@
 
   P.cancelRewarded = function () {
     var r = req;
-    if (!r || r.status !== "waiting") return;
+    if (!r || r.status !== "waiting") return false;
     r.timedOut = true;                   // если реклама всё же придёт — это «опоздала»
     finish(r, { ok: false, reason: "closed" });
+    return true;
   };
+  P.isWaitingRewarded = function () { return !!(req && req.status === "waiting"); };
 
   /* ---------------- имитация рекламы (без площадки) ---------------- */
 
@@ -321,7 +348,7 @@
     setup: function (opts) {
       this.reservePx = opts.bannerReservePx || cfg.BANNER_RESERVE_PX || 90;
       if (P.hasBridge && safe(function () { return bridge.advertisement.isBannerSupported; }, false)) this.mode = "bridge";
-      else if (!P.isReal && (opts.fakeBanner != null ? opts.fakeBanner : cfg.FAKE_BANNER) && query("nobanner") == null) this.mode = "fake";
+      else if (!P.isReal && testHost() && (opts.fakeBanner != null ? opts.fakeBanner : cfg.FAKE_BANNER) && query("nobanner") == null) this.mode = "fake";
       else this.mode = "none";
     },
     reserve: function (on) {
@@ -333,7 +360,9 @@
       this.state = s;
       this.reserve(s === "shown" && this.wanted);
     },
+    // show/hide можно звать сколько угодно раз: площадку дёргаем только при смене.
     show: function () {
+      if (this.wanted) return;
       this.wanted = true;
       if (this.mode === "bridge") {
         safe(function () { bridge.advertisement.showBanner("bottom"); });
@@ -348,15 +377,16 @@
             "border-top:1px dashed #6b7194;font:15px/1.3 system-ui,sans-serif;pointer-events:none";
           document.body.appendChild(el);
         }
-        this.el.hidden = false;
+        this.el.style.display = "flex";
         this.onState("shown");
       }
     },
     hide: function () {
+      if (!this.wanted) return;
       this.wanted = false;
       this.reserve(false);
       if (this.mode === "bridge") safe(function () { bridge.advertisement.hideBanner(); });
-      else if (this.mode === "fake" && this.el) { this.el.hidden = true; this.state = "hidden"; }
+      else if (this.mode === "fake" && this.el) { this.el.style.display = "none"; this.state = "hidden"; }
     }
   };
 

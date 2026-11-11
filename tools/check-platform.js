@@ -64,7 +64,7 @@ async function bannerClear(page, label) {
     window.scrollTo(0, document.documentElement.scrollHeight);
     await new Promise((res) => setTimeout(res, 60));
     const ban = document.querySelector(".fake-banner");
-    if (!ban || ban.hidden) return { noBanner: true };
+    if (!ban || getComputedStyle(ban).display === "none") return { noBanner: true };
     const top = ban.getBoundingClientRect().top;
     const under = [];
     document.querySelectorAll(".wrap a, .wrap button, .wrap input, .wrap p, .wrap li, .wrap h1, .wrap h2").forEach((el) => {
@@ -78,6 +78,8 @@ async function bannerClear(page, label) {
   if (r.noBanner) return;
   ok(!r.under.length, label + ": баннер (" + r.h + "px) не закрывает текст и кнопки " + (r.under.length ? JSON.stringify(r.under.slice(0, 4)) : ""));
 }
+
+const bannerHidden = (page) => page.evaluate(() => { const b = document.querySelector(".fake-banner"); if (!b) return true; const r = b.getBoundingClientRect(); return getComputedStyle(b).display === "none" || r.height === 0; });
 
 async function layout(page, label) {
   const r = await page.evaluate(() => {
@@ -168,11 +170,20 @@ async function unlockWeek(page) {
     // окна: пока открыто окно, баннера нет; закрыли — вернулся
     await page.goto(BASE + "?fakeadsec=1#dream=sobaka"); await page.reload(); await ready(page);
     await page.click(".btn-share-top"); await page.waitForSelector(".modal");
-    ok(await page.evaluate(() => document.querySelector(".fake-banner").hidden), label + ": окно «поделиться» — баннер убран");
+    ok(await bannerHidden(page), label + ": окно «поделиться» — баннер убран (не виден)");
     await page.click(".modal button:has-text('Открытка со сном')"); await page.waitForTimeout(200);
-    ok(await page.evaluate(() => document.querySelector(".fake-banner").hidden), label + ": окно открытки — баннер убран");
+    ok(await bannerHidden(page), label + ": окно открытки — баннер убран (не виден)");
     await page.keyboard.press("Escape"); await page.waitForTimeout(150);
-    ok(await page.evaluate(() => !document.querySelector(".fake-banner").hidden && document.documentElement.classList.contains("has-banner")), label + ": окно закрыли — баннер вернулся");
+    ok(!(await bannerHidden(page)) && await page.evaluate(() => document.documentElement.classList.contains("has-banner")), label + ": окно закрыли — баннер вернулся");
+    // экранная клавиатура: пока поле поиска в фокусе — баннера нет
+    await page.goto(BASE + "?fakeadsec=1"); await page.reload(); await ready(page);
+    await page.click(".search-input"); await page.waitForTimeout(150);
+    ok(await bannerHidden(page) && !(await page.evaluate(() => document.documentElement.classList.contains("has-banner"))), label + ": поле поиска в фокусе — баннер убран");
+    await page.keyboard.type("соб"); await page.waitForSelector(".suggest li");
+    const sugOk = await page.evaluate(() => { const l = [...document.querySelectorAll(".suggest li")].pop().getBoundingClientRect(); const b = document.querySelector(".fake-banner"); return getComputedStyle(b).display === "none" || l.bottom <= b.getBoundingClientRect().top; });
+    ok(sugOk, label + ": подсказки поиска не под баннером");
+    await page.click(".brand-name"); await page.waitForTimeout(200);
+    ok(!(await bannerHidden(page)), label + ": поле поиска без фокуса — баннер вернулся");
     const toast = await page.evaluate(() => { const t = document.getElementById("toast").getBoundingClientRect(), b = document.querySelector(".fake-banner").getBoundingClientRect(); return t.bottom <= b.top + 1; });
     ok(toast, label + ": подсказки (тосты) появляются над баннером");
     ok(!page._errors.length, label + ": ошибок в консоли нет " + JSON.stringify(page._errors));
@@ -195,20 +206,51 @@ async function unlockWeek(page) {
     await page.context().close();
   }
   {
-    // «Отмена» в окне ожидания, потом реклама всё-таки пришла — награды нет
+    // Реклама опоздала: «не загрузилась» → реклама всё-таки началась → сообщение убрано → досмотрена → неделя открыта
     const page = await open(browser, BASE + "?fakead=late&fakeadsec=1#week");
     await page.click("#weekAdBtn");
     await page.waitForSelector(".ad-wait");
     await layout(page, "окно «Загружаем рекламу»");
+    await page.waitForSelector(".notice", { timeout: 15000 });
+    ok(/не загрузилась/.test(await page.locator(".notice").textContent()) && await page.locator(".ad-wait").count() === 0, "молчит 12 с: «Реклама не загрузилась», приложение не зависло");
+    await page.waitForSelector(".fake-ad", { timeout: 6000 });
+    await page.waitForTimeout(100);
+    ok(await page.locator(".notice").count() === 0 && !(await page.evaluate(() => document.getElementById("toast").classList.contains("show"))), "реклама началась — сообщение «не загрузилась» убрано");
+    ok(!(await page.evaluate(() => Sonnik.weekState().open)), "пока опоздавшая реклама идёт, неделя закрыта");
+    await page.waitForFunction(() => /досмотрена/.test(document.querySelector(".fake-ad p").textContent), null, { timeout: 5000 });
+    await page.click(".fake-ad-close"); await page.waitForSelector(".week-day", { timeout: 3000 });
+    ok(await page.evaluate(() => Sonnik.weekState().open && Sonnik.adGrants() === 1), "опоздавшая реклама досмотрена — неделя открыта (одна награда)");
+    ok(/Готово/.test(await page.locator(".notice").textContent()), "сообщение «Готово!»");
+    const ev = await events(page);
+    ok(ev.some((e) => e.name === "ad_reward_failed" && e.data.reason === "timeout") && ev.some((e) => e.name === "week_unlocked" && e.data.late === true), "отметки: ad_reward_failed timeout, затем week_unlocked late=true");
+    await page.context().close();
+  }
+  {
+    // «Отмена» во время ожидания, реклама потом всё-таки пришла, но её закрыли раньше — награды нет
+    const page = await open(browser, BASE + "?fakead=late&fakeadsec=5#week");
+    await page.click("#weekAdBtn");
+    await page.waitForSelector(".ad-wait");
     await page.click(".ad-wait .btn");
     await page.waitForSelector(".notice");
     ok(/закрыта раньше/.test(await page.locator(".notice").textContent()) && await page.locator(".ad-wait").count() === 0, "«Отмена» во время ожидания: окно закрылось, сообщение есть");
     await page.waitForSelector(".fake-ad", { timeout: 16000 });
-    await page.waitForFunction(() => /досмотрена/.test(document.querySelector(".fake-ad p").textContent), null, { timeout: 5000 });
     await page.click(".fake-ad-close"); await page.waitForTimeout(300);
-    ok(!(await page.evaluate(() => Sonnik.weekState().open)), "опоздавшая реклама досмотрена — неделя не открылась");
-    ok(/слишком поздно/.test(await page.locator(".notice").textContent()), "опоздала: понятное сообщение");
-    ok((await events(page)).some((e) => e.name === "ad_reward_failed" && e.data.reason === "late"), "отметка ad_reward_failed reason=late");
+    ok(!(await page.evaluate(() => Sonnik.weekState().open)), "опоздавшая реклама закрыта раньше конца — неделя не открылась");
+    ok(/закрыта раньше/.test(await page.locator(".notice").textContent()), "понятное сообщение");
+    ok((await events(page)).some((e) => e.name === "ad_reward_failed" && e.data.reason === "closed" && e.data.late === true), "отметка ad_reward_failed closed late=true");
+    await page.context().close();
+  }
+  {
+    // «Назад» во время «Загружаем рекламу…» = «Отмена»; устаревшего сообщения нет
+    const page = await open(browser, BASE + "?fakead=silent");
+    await page.click("#weekInvite .btn"); await page.waitForSelector("#weekAdBtn");
+    await page.click("#weekAdBtn"); await page.waitForSelector(".ad-wait");
+    await page.goBack(); await page.waitForTimeout(300);
+    ok(await page.locator(".ad-wait").count() === 0 && await page.locator(".search-input").count() === 1, "«Назад» во время ожидания: ожидание отменено, открылась главная");
+    ok((await events(page)).some((e) => e.name === "ad_reward_failed" && e.data.reason === "closed"), "отметка ad_reward_failed closed");
+    await page.click("#weekInvite .btn"); await page.waitForSelector("#weekAdBtn");
+    ok(await page.locator(".notice").count() === 0, "на экране недели нет устаревшего сообщения");
+    ok(await page.evaluate(() => !Sonnik.adBusy()), "приложение не ждёт рекламу");
     await page.context().close();
   }
   {
@@ -246,14 +288,57 @@ async function unlockWeek(page) {
     await page.evaluate(() => { const n = new Date(); const d = Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); return Platform.save({ sonnik_week: { from: d - 7 } }); });
     await page.goto(BASE + "#week"); await page.reload(); await ready(page);
     ok(await page.locator("#weekAdBtn").count() === 1 && await page.locator(".week-day").count() === 0, "через 7 дней неделя снова закрыта — открыть можно за рекламу");
+    ok(/Ваша неделя закончилась — откройте новую/.test(await page.locator("main").textContent()), "экран недели: «Ваша неделя закончилась — откройте новую»");
+    await page.goto(BASE); await page.reload(); await ready(page);
+    ok(/Ваша неделя закончилась/.test(await page.locator("#weekInvite").textContent()), "главная: «Ваша неделя закончилась»");
     await page.evaluate(() => { const n = new Date(); const d = Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); return Platform.save({ sonnik_week: { from: d - 6 } }); });
-    await page.reload(); await ready(page);
+    await page.goto(BASE + "#week"); await page.reload(); await ready(page);
     ok(await page.locator(".week-day").count() === 7, "на 7-й день ещё открыта");
     ok(!page._errors.length, "ошибок в консоли нет " + JSON.stringify(page._errors));
     await page.context().close();
   }
 
+  console.log("\nПолночь на экране недели:");
+  {
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "ru-RU" });
+    const page = await ctx.newPage();
+    await page.clock.install({ time: new Date(2026, 10, 11, 23, 59, 0) });
+    await page.goto(BASE + "#week");
+    await ready(page);
+    // неделя открыта 6 дней назад: сегодня последний день
+    await page.evaluate(() => { const n = new Date(); const d = Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); return Platform.save({ sonnik_week: { from: d - 6 } }); });
+    await page.reload(); await ready(page);
+    const before = await page.locator(".week-day").count();
+    const firstBefore = await page.locator(".week-title").first().textContent();
+    await page.clock.runFor(2 * 60 * 1000);
+    await page.waitForTimeout(200);
+    ok(before === 7 && await page.locator(".week-day").count() === 0 && /закончилась/.test(await page.locator("main").textContent()), "в полночь экран недели обновился: последний день прошёл — «неделя закончилась»");
+    await page.evaluate(() => { const n = new Date(); const d = Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); return Platform.save({ sonnik_week: { from: d } }); });
+    await page.reload(); await ready(page);
+    const first = await page.locator(".week-title").first().textContent();
+    await page.clock.runFor(24 * 3600 * 1000);
+    await page.waitForTimeout(200);
+    const second = await page.locator(".week-title").first().textContent();
+    const want = await page.evaluate(() => Sonnik.weekDreams(new Date())[0].dream.title);
+    ok(second === want && first !== second, "в следующую полночь список сдвинулся на день: «" + first + "» → «" + second + "» (было до полуночи: " + firstBefore + ")");
+    await ctx.close();
+  }
+
   console.log("\nХранилище и «Недавно смотрели»:");
+  {
+    // запись «недавно смотрели» — не чаще раза в несколько секунд
+    const page = await open(browser, BASE);
+    await page.evaluate(() => { window.__saves = []; const o = Platform.save; Platform.save = (x) => { window.__saves.push(Object.keys(x).join(",")); return o(x); }; });
+    for (const id of ["sobaka", "koshka", "zmeya", "voda"]) { await page.evaluate((i) => { location.hash = "dream=" + i; }, id); await page.waitForTimeout(150); }
+    const n0 = await page.evaluate(() => window.__saves.length);
+    await page.waitForTimeout(4500);
+    const n1 = await page.evaluate(() => window.__saves.slice());
+    ok(n0 === 0 && n1.length === 1 && n1[0] === "sonnik_recent", "4 сна подряд — одна запись через несколько секунд (сразу: " + n0 + ", потом: " + JSON.stringify(n1) + ")");
+    await page.evaluate(() => { location.hash = "dream=sobaka"; });
+    await page.waitForTimeout(100);
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await page.context().close();
+  }
   {
     const page = await open(browser, BASE + "#dream=sobaka");
     await page.goto(BASE + "#dream=koshka"); await page.reload(); await ready(page);
@@ -274,6 +359,29 @@ async function unlockWeek(page) {
     ok((await page.locator(".recent .chip").allTextContents())[0] === "Змея", "без Bridge: «Недавно смотрели» сохранились (localStorage)");
     ok(await page.locator("#weekInvite").count() === 1, "без Bridge: неделя открывается имитацией рекламы");
     ok(!page._errors.filter((e) => !/Failed to load resource|ERR_FAILED/.test(e)).length, "без Bridge: ошибок нет " + JSON.stringify(page._errors));
+    await ctx.close();
+  }
+
+  console.log("\nДругой адрес (как внутри ВК/ОК): имитации рекламы нет");
+  for (const blockBridge of [false, true]) {
+    const label = blockBridge ? "Bridge не загрузился" : "Bridge без рекламы";
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "ru-RU" });
+    await ctx.route("http://sonnik.example/**", async (route) => {
+      let p = new URL(route.request().url()).pathname.slice(1) || "index.html";
+      if (blockBridge && p === "playgama-bridge.js") return route.abort();
+      const file = path.join(ROOT, p);
+      if (!fs.existsSync(file)) return route.fulfill({ status: 404, body: "" });
+      route.fulfill({ status: 200, contentType: TYPES[path.extname(file)] || "application/octet-stream", body: fs.readFileSync(file) });
+    });
+    await ctx.route(/^(?!http:\/\/sonnik\.example)/, (r) => r.abort());
+    const page = await ctx.newPage();
+    await page.goto("http://sonnik.example/");
+    await ready(page);
+    const st = await page.evaluate(() => ({ id: Platform.id, rew: Platform.rewardedAvailable(), banner: Platform.banner.mode }));
+    ok(!st.rew && st.banner === "none", label + " (" + st.id + "): реклама недоступна, баннера нет");
+    ok(await page.locator("#weekInvite, .week-invite").count() === 0 && await page.locator(".fake-banner").count() === 0, label + ": нет приглашения недели и серой полоски");
+    await page.goto("http://sonnik.example/#week"); await page.reload(); await ready(page);
+    ok(await page.locator(".search-input").count() === 1 && await page.locator("#weekAdBtn").count() === 0, label + ": #week открывает главную (нет обещания и неактивной кнопки)");
     await ctx.close();
   }
 

@@ -59,7 +59,12 @@
       s.onerror = function () { var n = document.getElementById("bootNote"); if (n) n.textContent = "Не получилось загрузить сонник. Обновите страницу."; };
       document.body.appendChild(s);
     }
-    window.Platform.init({ timeoutMs: 8000, localPrefix: "" }).then(function () { load(0); }, function () { load(0); });
+    // Bridge ждём не дольше 8 с, и всё вместе — не дольше 10 с от начала загрузки страницы.
+    var started = false;
+    function go() { if (!started) { started = true; load(0); } }
+    setTimeout(go, Math.max(0, 10500 - (window.performance && performance.now ? performance.now() : 0)));
+    if (!window.Platform) { go(); return; }
+    window.Platform.init({ timeoutMs: 8000, deadlineMs: 10000, localPrefix: "" }).then(go, go);
   })();
   </script>
 </body>
