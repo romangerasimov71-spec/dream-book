@@ -1286,14 +1286,12 @@
       if (data && Array.isArray(data[KEY_RECENT])) store[KEY_RECENT] = data[KEY_RECENT].map(String).slice(0, 8);
       if (data && data[KEY_WEEK] && typeof data[KEY_WEEK] === "object") store[KEY_WEEK] = data[KEY_WEEK];
     }, function () { /* без сохранённого */ }).then(function () {
-      var entry = parseHash().name;
-      var returning = getRecent().length > 0 || !!store[KEY_WEEK];
+      AN.event("app_opened", { entry: parseHash().name, returning: getRecent().length > 0 || !!store[KEY_WEEK] });
       render(true);
       scheduleMidnight();
       if (PF && PF.banner) PF.banner.show();
       if (PF) PF.gameReady();
       AN.ready();
-      AN.event("app_opened", { entry: entry, returning: returning });
       ready = true;
     });
   }
