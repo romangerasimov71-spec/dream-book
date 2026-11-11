@@ -191,6 +191,24 @@ function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) +
         ok(/^(Точно такого сна нет|Такого сна пока нет в соннике)$/.test(got), "«" + q + "» не открывает чужой сон: " + got + (got.startsWith("Точно") ? " → " + first : ""));
       }
     }
+    if (sc.name === "phone-portrait") {
+      ok((await page.locator(".foot p").first().textContent()) === "Толкования и предсказания — для развлечения и размышлений, не совет врача.", "подвал: «Толкования и предсказания — …»");
+      for (const q of ["потеряла ребенка", "замок"]) {
+        await page.goto(BASE);
+        const got = await searchFor(page, q);
+        ok(got === "Выберите, что ближе к вашему сну" && await page.locator(".list .item").count() >= 2, "«" + q + "» → экран выбора «" + got + "»");
+      }
+      for (const [q, want] of [["любовник", "Любовник"], ["кот", "Кошка"], ["тошнит", "Рвота"]]) {
+        await page.goto(BASE + "#q=" + encodeURIComponent(q)); await page.reload(); await page.waitForSelector("main h1");
+        ok((await page.locator("main h1").textContent()) === want && /#dream=/.test(page.url()), "#q=" + q + " → сразу сон «" + want + "»");
+      }
+      for (const q of ["baba", "свекла"]) {
+        await page.goto(BASE);
+        await searchFor(page, q);
+        const sim = await page.locator("h2:has-text('Похоже по написанию')").count();
+        ok(sim === 0, "«" + q + "»: блока «Похоже по написанию» нет (близких нет)");
+      }
+    }
     await page.goto(BASE);
     const nf = await searchFor(page, "абракадабра");
     ok(nf === "Такого сна пока нет в соннике", "несуществующее слово → «" + nf + "»");

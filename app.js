@@ -162,17 +162,21 @@
   }
 
   var toastTimer;
+  // Убираем и текст: подсказка — живая область для читалок, старое сообщение там не остаётся.
   function hideToast() {
     clearTimeout(toastTimer);
     var t = document.getElementById("toast");
-    if (t) t.classList.remove("show");
+    if (t) { t.classList.remove("show"); t.textContent = ""; }
   }
   function toast(msg, ms) {
     var t = document.getElementById("toast");
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove("show"); }, ms || 2600);
+    toastTimer = setTimeout(function () {
+      t.classList.remove("show");
+      toastTimer = setTimeout(function () { t.textContent = ""; }, 400);
+    }, ms || 2600);
   }
 
   /* ================= сон дня ================= */
@@ -291,6 +295,15 @@
       try { history.replaceState({ depth: depth() }, "", location.href.split("#")[0]); } catch (e) { /* ничего */ }
       lastHash = location.hash;
       r = { name: "home" };
+    }
+    if (r.name === "q") {
+      // #q=<название или синоним> — как поиск через Enter: уверенное совпадение открываем сразу.
+      var hit = S ? S.search(INDEX, r.q).filter(function (x) { return x.strong; })[0] : null;
+      if (hit) {
+        try { history.replaceState(history.state, "", location.href.split("#")[0] + "#dream=" + encodeURIComponent(hit.d.id)); } catch (e) { /* ничего */ }
+        lastHash = location.hash;
+        r = { name: "dream", id: hit.d.id };
+      }
     }
     if (r.name === "q") {
       // Слишком длинный запрос в адресе — укорачиваем и адрес.
@@ -609,28 +622,38 @@
   function weekAvailable() { return PREDS.length >= 7 && (weekState().open || !!(PF && PF.rewardedAvailable())); }
 
   var WEEKDAY_ACC = ["воскресенье", "понедельник", "вторник", "среду", "четверг", "пятницу", "субботу"];
-  function dayTitle(date, i) { return (i === 0 ? "Завтра, " : weekdayLabel(date) + ", ") + dateLabel(date); }
-  function shortText(t, max) {
-    t = String(t);
-    var m = t.match(/^.*?[.!?…](?=\s|$)/);
-    var first = m ? m[0] : t;
-    if (first.length <= max) return first.replace(/[.!…]$/, "");
-    var cut = t.slice(0, max);
-    return cut.slice(0, cut.lastIndexOf(" ")).replace(/[,:;—–-]\s*$/, "") + "…";
+  // i: -1 — сегодня, 0 — завтра, дальше — день недели.
+  function dayTitle(date, i) { return (i < 0 ? "Сегодня, " : i === 0 ? "Завтра, " : weekdayLabel(date) + ", ") + dateLabel(date); }
+  // Первое предложение целиком (без точки в конце). Никогда не режем посреди предложения.
+  function firstSentence(t) {
+    t = String(t).trim();
+    var m = t.match(/^.*?[.!?](?=\s|$)/);
+    return (m ? m[0] : t).replace(/\.$/, "");
   }
   function weekShareUrl() {
     var base = PF ? PF.appUrl() : location.href.split("#")[0].split("?")[0];
     return base.split("#")[0] + "#week";
   }
+  // «Моя неделя в Соннике: пятница, 13 ноября — …; суббота, 14 ноября — …. Узнайте свою неделю!»
+  // Дни — с сегодняшнего, по первому предложению целиком; длинно — меньше дней (не меньше двух).
+  var WEEK_SHARE_MAX = 330;
   function weekShareItem() {
-    var days = weekDays(new Date()).slice(0, 3).map(function (x, i) {
-      return (i === 0 ? "Завтра" : weekdayLabel(x.date)) + " — " + lowerFirst(shortText(x.pred.text, 60));
+    var list = weekWithToday(new Date());
+    var parts = list.slice(0, 3).map(function (x) {
+      return lowerFirst(weekdayLabel(x.date)) + ", " + dateLabel(x.date) + " — " + lowerFirst(firstSentence(x.pred.text));
     });
-    return { what: "week", heading: "Поделиться неделей", title: "Мой сонник на неделю",
-      text: "Мой сонник на неделю: " + days.join("; ") + (/…$/.test(days[days.length - 1]) ? " " : ". ") + "Узнайте свою неделю в Соннике", url: weekShareUrl() };
+    var make = function (n) { return "Моя неделя в Соннике: " + parts.slice(0, n).join("; ") + ". Узнайте свою неделю!"; };
+    var text = make(3);
+    if (text.length > WEEK_SHARE_MAX) text = make(2);
+    return { what: "week", heading: "Поделиться неделей", title: "Моя неделя в Соннике", text: text, url: weekShareUrl() };
+  }
+  // Сегодня + 7 следующих дней (экран открытой недели).
+  function weekWithToday(now) {
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12);
+    return [{ date: today, pred: predictionFor(today), dream: dreamOfDay(today), today: true }].concat(weekDays(now));
   }
   function dayShareItem(x, i) {
-    var on = i === 0 ? "завтра, " + dateLabel(x.date) : WEEKDAY_ACC[x.date.getDay()] + ", " + dateLabel(x.date);
+    var on = (i < 0 ? "сегодня, " : i === 0 ? "завтра, " : WEEKDAY_ACC[x.date.getDay()] + ", ") + dateLabel(x.date);
     return { what: "day", heading: "Поделиться предсказанием", title: "Моё предсказание — Сонник",
       text: "Моё предсказание на " + on + ": " + x.pred.text + " — Сонник", url: weekShareUrl() };
   }
@@ -682,17 +705,18 @@
     var days = weekDays(new Date());
     if (st.open) {
       app.appendChild(h("div", { class: "card week-head" }, [t,
-        h("p", { class: "lead", text: "Ваше личное предсказание на каждый из 7 дней. Открыт до " + weekUntilLabel() + " включительно." })]));
+        h("p", { class: "lead", text: "Ваше личное предсказание на сегодня и на 7 дней вперёд. Открыт до " + weekUntilLabel() + " включительно." })]));
       if (notice) app.appendChild(notice);
-      app.appendChild(h("ol", { class: "week-list" }, days.map(function (x, i) {
+      app.appendChild(h("ol", { class: "week-list" }, weekWithToday(new Date()).map(function (x, k) {
+        var i = k - 1;   // -1 — сегодня, 0 — завтра …
         var shareDay = h("button", { type: "button", class: "btn btn-small week-share" }, [icon("share"), "Поделиться"]);
         shareDay.addEventListener("click", function () { share(dayShareItem(x, i), shareDay); });
-        return h("li", { class: "card week-day" }, [
+        return h("li", { class: "card week-day" + (i < 0 ? " week-day-today" : "") }, [
           h("p", { class: "week-date", text: dayTitle(x.date, i) }),
           predMoodBadge(x.pred.mood),
           h("p", { class: "week-text", text: x.pred.text }),
           x.pred.tip ? h("p", { class: "week-tip" }, [h("b", { text: "Совет: " }), x.pred.tip]) : null,
-          x.dream ? h("p", { class: "week-dream" }, ["Сон дня: ", h("a", { href: "#dream=" + encodeURIComponent(x.dream.id), "data-src": "week" }, x.dream.title)]) : null,
+          x.dream ? h("p", { class: "week-dream" }, ["Сон дня в этот день: ", h("a", { href: "#dream=" + encodeURIComponent(x.dream.id), "data-src": "week" }, x.dream.title)]) : null,
           shareDay
         ]);
       })));
@@ -789,7 +813,7 @@
     saveKeys(o, true);
     AN.event("week_unlocked", { source: src, late: !!late });
     hideToast();
-    weekNotice = { kind: "ok", text: "Готово! Сонник на неделю открыт до " + weekUntilLabel() + " включительно." };
+    weekNotice = { kind: "ok", text: "Готово! Ваша неделя открыта." };   // срок — строкой выше, не повторяем
     refreshInvite();
     if (modal) closeModal();
     pendingSource = "rerender";
@@ -978,15 +1002,18 @@
   function renderNotFound(app, q) {
     q = String(q || "").slice(0, MAX_Q);
     app.appendChild(backButton());
-    var maybe = S.search(INDEX, q).slice(0, 5).map(function (r) { return r.d; });
+    var found = S.search(INDEX, q).slice(0, 5);
+    var maybe = found.map(function (r) { return r.d; });
+    // Несколько подходящих по смыслу — выбор; только по опечатке/похожести — «точно такого нет».
+    var choice = found.some(function (r) { return !r.typo; });
     var t;
     if (maybe.length) {
-      t = h("h1", { tabindex: "-1", text: "Точно такого сна нет" });
+      t = h("h1", { tabindex: "-1", text: choice ? "Выберите, что ближе к вашему сну" : "Точно такого сна нет" });
       app.appendChild(h("div", { class: "card empty" }, [
         t,
         h("p", { class: "lead" }, ["Вы искали: ", h("span", { class: "query", text: "«" + q + "»" })])
       ]));
-      app.appendChild(h("h2", { class: "section-title", text: "Может быть, вы имели в виду:" }));
+      if (!choice) app.appendChild(h("h2", { class: "section-title", text: "Может быть, вы имели в виду:" }));
       app.appendChild(h("ul", { class: "list" }, maybe.map(function (d) { return h("li", null, dreamLink(d, true, "search")); })));
     } else {
       t = h("h1", { tabindex: "-1", text: "Такого сна пока нет в соннике" });
@@ -995,7 +1022,7 @@
         h("p", { class: "lead" }, ["Вы искали: ", h("span", { class: "query", text: "«" + q + "»" })]),
         h("p", { class: "lead", text: "Попробуйте написать одно главное слово из сна — например, «собака», а не «большая лохматая собака»." })
       ]));
-      var sim = S.similar(INDEX, q, 5);
+      var sim = S.similar(INDEX, q, 3);
       if (sim.length) {
         app.appendChild(h("h2", { class: "section-title", text: "Похоже по написанию:" }));
         app.appendChild(h("ul", { class: "list" }, sim.map(function (d) { return h("li", null, dreamLink(d, true, "search")); })));
@@ -1469,6 +1496,8 @@
     var next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 2);
     setTimeout(function () { refreshToday(); scheduleMidnight(); }, Math.min(next - now, 2147483000));
   }
+  // Запасная проверка раз в минуту: таймер на полночь может опоздать (сон компьютера, фон).
+  setInterval(function () { if (!document.hidden) refreshToday(); }, 60000);
   var shownDay = dayNumber(new Date());
   function refreshToday() {
     var n = dayNumber(new Date());

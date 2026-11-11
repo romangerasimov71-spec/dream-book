@@ -77,6 +77,20 @@ for (const [q, bad] of NEVER) {
   if (hit.length) fails++;
   console.log((hit.length ? "  FAIL " : "  ok   ") + ("без мусора «" + q + "»").padEnd(26) + " → " + shown.join(", ") + " | подсказки: " + (sug.join(", ") || "—"));
 }
+// «Похоже по написанию»: не больше 3 и только близкие; экран выбора vs опечатка.
+for (const [q, want] of [["baba", []], ["свекла", []], ["крыша", []], ["абракадабра", []], ["собакка", ["Собака"]], ["кошкаа", ["Кошка"]]]) {
+  const sim = S.similar(idx, q).map((d) => d.title);
+  const ok = sim.length <= 3 && JSON.stringify(sim) === JSON.stringify(want);
+  if (!ok) fails++;
+  console.log((ok ? "  ok   " : "  FAIL ") + ("похоже «" + q + "»").padEnd(26) + " → " + (sim.join(", ") || "—"));
+}
+for (const [q, typo] of [["сабака", true], ["собакка", true], ["потеряла ребенка", false], ["замок", false], ["первая любовь", false]]) {
+  const res = S.search(idx, q).slice(0, 5);
+  const isTypo = res.length > 0 && res.every((r) => r.typo);
+  const ok = isTypo === typo;
+  if (!ok) fails++;
+  console.log((ok ? "  ok   " : "  FAIL ") + ("«" + q + "»").padEnd(26) + " → " + (typo ? "«Точно такого сна нет» (опечатка)" : "«Выберите, что ближе к вашему сну»"));
+}
 // Синонимы не пересекаются: одно и то же слово — не у двух снов (кроме «~» — «на выбор»).
 const owner = {};
 const clash = [];

@@ -150,21 +150,21 @@
         return ratio >= 0.6 ? { s: 66 + Math.round(18 * ratio), strong: true } : { s: 48, strong: false };
       }
     }
-    if (t.s.length >= 4 && qw.indexOf(t.s) === 0) return { s: 46, strong: false };
+    if (t.s.length >= 4 && qw.indexOf(t.s) === 0) return { s: 46, strong: false, typo: true };
     // Опечатки: только длинные слова, первая буква совпадает, сравниваем целые слова.
     if (qw.length >= 5 && qw[0] === tw[0]) {
       if (qw.length >= 8) {
         var max = qw.length >= 9 ? 2 : 1;
         var d = lev(qw, tw, max);
-        if (d <= max) return { s: 52 - 6 * d, strong: false };
+        if (d <= max) return { s: 52 - 6 * d, strong: false, typo: true };
         if (suggest && tw.length > qw.length) {
           d = lev(qw, tw.slice(0, qw.length), max);
-          if (d <= max) return { s: 44 - 4 * d, strong: false };
+          if (d <= max) return { s: 44 - 4 * d, strong: false, typo: true };
         }
       } else {
         // 6–7 букв: целое слово с одной заменой гласной; 5 букв — только начало в подсказках («сабак…»).
-        if (qw.length >= 6 && vowelTypo(qw, tw)) return { s: 46, strong: false };
-        if (suggest && tw.length > qw.length && vowelTypo(qw, tw.slice(0, qw.length))) return { s: 40, strong: false };
+        if (qw.length >= 6 && vowelTypo(qw, tw)) return { s: 46, strong: false, typo: true };
+        if (suggest && tw.length > qw.length && vowelTypo(qw, tw.slice(0, qw.length))) return { s: 40, strong: false, typo: true };
       }
     }
     return null;
@@ -188,10 +188,10 @@
       var per = qinfo.map(function () { return null; });
       var bonus = 0, deathHit = false;
       var tWeak = false;
-      function put(qi, s, strong) {
+      function put(qi, s, strong, typo) {
         if (tWeak && strong) { strong = false; s = Math.min(s, 70); }
         var cur = per[qi];
-        if (!cur || (strong && !cur.strong) || (strong === cur.strong && s > cur.s)) per[qi] = { s: s, strong: strong };
+        if (!cur || (strong && !cur.strong) || (strong === cur.strong && s > cur.s)) per[qi] = { s: s, strong: strong, typo: !!typo };
       }
       e.terms.forEach(function (t) {
         if (t.death && !qHasDeath && !(opts.suggest && t.ws.some(function (tw) {
@@ -203,7 +203,7 @@
           tb += 3;
           qinfo.forEach(function (qq, qi) {
             var m = singleMatch(qq, t.ws[0], t.isTitle, !!opts.suggest);
-            if (m) put(qi, m.s + tb, m.strong);
+            if (m) put(qi, m.s + tb, m.strong, m.typo);
           });
         } else {
           // Многословный синоним: уверенно — только если в запросе есть все его слова.
@@ -238,7 +238,9 @@
       var best = Math.max.apply(null, vals);
       var sum = vals.reduce(function (a, b) { return a + b; }, 0);
       if (deathHit) bonus += 40;
-      out.push({ d: e.d, score: best + 0.35 * (sum - best) + bonus, strong: strong, deathHit: deathHit });
+      // typo — нашлось только по опечатке/похожему написанию (для заголовка «Точно такого сна нет»).
+      out.push({ d: e.d, score: best + 0.35 * (sum - best) + bonus, strong: strong, deathHit: deathHit,
+        typo: got.every(function (x) { return x.typo; }) });
     });
 
     var rawWs = words(q);
@@ -277,7 +279,9 @@
     return opts.limit ? out.slice(0, opts.limit) : out;
   }
 
-  /* Похожие по написанию — для экрана «ничего не нашлось». Только достаточно близкие. */
+  /* Похожие по написанию — для экрана «ничего не нашлось». Только действительно близкие:
+     слово от 6 букв — одна ошибка (от 10 — две), первая буква та же; короче — только замена
+     гласной на гласную. Не больше n (по умолчанию 3). */
   function similar(index, q, n) {
     var qws = queryWords(q);
     if (!qws.length) return [];
@@ -285,20 +289,25 @@
     index.forEach(function (e) {
       var best = 0;
       e.terms.forEach(function (t) {
-        if (t.ws.length !== 1 || t.death) return;
+        if (t.ws.length !== 1 || t.death || t.weak) return;
         var tw = t.ws[0].w;
         qws.forEach(function (qw) {
-          if (qw.length < 3) return;
-          var m = Math.max(qw.length, tw.length);
-          var sim = 1 - lev(qw, tw) / m;
-          if (qw[0] !== tw[0]) sim -= 0.15;
+          if (qw.length < 4 || qw[0] !== tw[0]) return;
+          var sim = 0;
+          if (qw.length >= 6) {
+            var max = qw.length >= 10 ? 2 : 1;
+            var d = lev(qw, tw, max);
+            // одна ошибка в начале слова допустима только как замена гласной («свекла» ≠ «стекла»)
+            var startOk = qw.slice(0, 2) === tw.slice(0, 2) || vowelTypo(qw, tw);
+            if (d <= max && (d === 0 || startOk)) sim = 1 - d / Math.max(qw.length, tw.length);
+          } else if (vowelTypo(qw, tw)) sim = 1 - 1 / qw.length;
           if (sim > best) best = sim;
         });
       });
-      if (best >= 0.6) out.push({ d: e.d, score: best });
+      if (best > 0) out.push({ d: e.d, score: best });
     });
     out.sort(function (a, b) { return b.score - a.score; });
-    return out.slice(0, n || 5).map(function (r) { return r.d; });
+    return out.slice(0, n || 3).map(function (r) { return r.d; });
   }
 
   var api = {
