@@ -95,6 +95,7 @@
     save: '<path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 19h14"/>',
     bulb: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9c.6.5 1 1.2 1 2.1h5c0-.9.4-1.6 1-2.1A6 6 0 0 0 12 3z"/>',
     star: '<path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6-5.3-3-5.3 3 1.2-6-4.5-4.1 6-.7z"/>',
+    lock: '<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
     calendar: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M15.5 13.2a2.3 2.3 0 1 0 1.5 4 1.9 1.9 0 0 1-1.5-4z"/>'
   };
 
@@ -116,10 +117,11 @@
 
   /* Сохранённое: читаем один раз при запуске (Platform.load), дальше держим в памяти и
      сохраняем изменённое через Platform.save (хранилище площадки, без неё — localStorage). */
-  var KEY_RECENT = "sonnik_recent", KEY_WEEK = "sonnik_week";
+  var KEY_RECENT = "sonnik_recent", KEY_WEEK = "sonnik_week", KEY_SEED = "sonnik_seed";
   var store = {};
   store[KEY_RECENT] = [];
   store[KEY_WEEK] = null;
+  store[KEY_SEED] = null;
   // Пишем в хранилище не чаще раза в несколько секунд: изменения копятся и уходят одним вызовом.
   // now = true — сразу (неделя за рекламу). При сворачивании/закрытии — тоже сразу.
   var pendingSave = {}, saveTimer = 0, SAVE_DELAY = 4000;
@@ -530,29 +532,130 @@
     var now = date || new Date();
     return dateLabel(new Date(now.getFullYear(), now.getMonth(), now.getDate() + st.left - 1));
   }
-  // 7 снов дня вперёд — тем же правилом, что «сон дня»: на завтра … +7 дней.
-  function weekDreams(date) {
+  /* ---- личные предсказания (data/predictions.js) ---- */
+
+  var PMOODS = {
+    good: { label: "хороший день", cls: "mood-good" },
+    mixed: { label: "день с хлопотами", cls: "mood-mixed" },
+    warn: { label: "будьте внимательнее", cls: "mood-warn" }
+  };
+  var PREDS = (Array.isArray(window.PREDICTIONS) ? window.PREDICTIONS : []).filter(function (p) {
+    return p && p.id && p.text;
+  }).map(function (p) {
+    return { id: String(p.id), mood: PMOODS[p.mood] ? p.mood : "mixed", text: String(p.text), tip: p.tip ? String(p.tip) : "" };
+  });
+  function predMoodBadge(mood) {
+    var m = PMOODS[mood] || PMOODS.mixed;
+    return h("span", { class: "mood " + m.cls, text: m.label });
+  }
+
+  // Личное зерно: случайное число, создаётся при первом запуске и хранится (sonnik_seed).
+  // Никаких данных площадки — только своё число, чтобы у каждого была своя неделя.
+  function newSeed() {
+    var x = 0;
+    try { var a = new Uint32Array(1); window.crypto.getRandomValues(a); x = a[0]; } catch (e) { x = Math.floor(Math.random() * 4294967295); }
+    return (x >>> 0) % 2147483646 + 1;
+  }
+  function personalSeed() {
+    var sd = store[KEY_SEED];
+    return typeof sd === "number" && sd > 0 ? sd : 1;
+  }
+
+  // Круг из всех предсказаний в личном порядке. Предсказание на день — место в круге по номеру дня,
+  // поэтому 7 дней подряд всегда разные. «Будьте внимательнее» (warn) стоят не ближе 7 мест друг
+  // к другу (и через конец круга), значит за любые 7 дней подряд — не больше одного.
+  var cycleCache = {};
+  function predCycle(seed) {
+    if (cycleCache[seed]) return cycleCache[seed];
+    var rnd = seeded(seed * 2654435761 >>> 0 || 1);
+    var shuffle = function (a) {
+      for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(rnd() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+      return a;
+    };
+    var L = PREDS.length;
+    var warn = [], other = [];
+    PREDS.forEach(function (p, i) { (p.mood === "warn" ? warn : other).push(i); });
+    shuffle(warn); shuffle(other);
+    var k = Math.min(warn.length, Math.floor(L / 7));
+    warn = warn.slice(0, k);                  // лишние warn (если бы их было больше L/7) в круг не идут
+    var size = other.length + warn.length;
+    var cyc = new Array(size), slots = {};
+    if (k) {
+      var sp = Math.floor(size / k);
+      for (var w = 0; w < k; w++) slots[w * sp + Math.floor(rnd() * (sp - 6))] = warn[w];
+    }
+    var oi = 0;
+    for (var pos = 0; pos < size; pos++) cyc[pos] = slots[pos] != null ? slots[pos] : other[oi++];
+    var res = { list: cyc, shift: Math.floor(rnd() * size) };
+    cycleCache[seed] = res;
+    return res;
+  }
+  function predictionFor(date, seed) {
+    if (PREDS.length < 7) return null;
+    var c = predCycle(seed || personalSeed());
+    var L = c.list.length;
+    var n = dayNumber(date) + c.shift;
+    return PREDS[c.list[((n % L) + L) % L]];
+  }
+  // 7 дней вперёд: на завтра … +7. Для каждого — предсказание и (маленькой строкой) сон дня.
+  function weekDays(date, seed) {
     var now = date || new Date(), out = [];
     for (var i = 1; i <= 7; i++) {
       var day = new Date(now.getFullYear(), now.getMonth(), now.getDate() + i, 12);
-      out.push({ date: day, dream: dreamOfDay(day) });
+      out.push({ date: day, pred: predictionFor(day, seed), dream: dreamOfDay(day) });
     }
     return out;
   }
-  function weekAvailable() { return weekState().open || !!(PF && PF.rewardedAvailable()); }
+  function weekAvailable() { return PREDS.length >= 7 && (weekState().open || !!(PF && PF.rewardedAvailable())); }
+
+  var WEEKDAY_ACC = ["воскресенье", "понедельник", "вторник", "среду", "четверг", "пятницу", "субботу"];
+  function dayTitle(date, i) { return (i === 0 ? "Завтра, " : weekdayLabel(date) + ", ") + dateLabel(date); }
+  function shortText(t, max) {
+    t = String(t);
+    var m = t.match(/^.*?[.!?…](?=\s|$)/);
+    var first = m ? m[0] : t;
+    if (first.length <= max) return first.replace(/[.!…]$/, "");
+    var cut = t.slice(0, max);
+    return cut.slice(0, cut.lastIndexOf(" ")).replace(/[,:;—–-]\s*$/, "") + "…";
+  }
+  function weekShareUrl() {
+    var base = PF ? PF.appUrl() : location.href.split("#")[0].split("?")[0];
+    return base.split("#")[0] + "#week";
+  }
+  function weekShareItem() {
+    var days = weekDays(new Date()).slice(0, 3).map(function (x, i) {
+      return (i === 0 ? "Завтра" : weekdayLabel(x.date)) + " — " + lowerFirst(shortText(x.pred.text, 60));
+    });
+    return { what: "week", heading: "Поделиться неделей", title: "Мой сонник на неделю",
+      text: "Мой сонник на неделю: " + days.join("; ") + (/…$/.test(days[days.length - 1]) ? " " : ". ") + "Узнайте свою неделю в Соннике", url: weekShareUrl() };
+  }
+  function dayShareItem(x, i) {
+    var on = i === 0 ? "завтра, " + dateLabel(x.date) : WEEKDAY_ACC[x.date.getDay()] + ", " + dateLabel(x.date);
+    return { what: "day", heading: "Поделиться предсказанием", title: "Моё предсказание — Сонник",
+      text: "Моё предсказание на " + on + ": " + x.pred.text + " — Сонник", url: weekShareUrl() };
+  }
 
   // Приглашение (на главной под «Сном дня» и на экране сна дня).
+  // Неделя открыта — вместо приглашения «Ваше предсказание на сегодня».
   function weekInvite(src) {
     if (!DREAMS.length || !weekAvailable()) return null;
     var st = weekState();
-    var text = st.open ? "Открыт до " + weekUntilLabel() + " включительно: сны дня на 7 дней вперёд с советом на каждый день."
-      : st.expired ? "Ваша неделя закончилась — откройте новую."
-      : "Сны дня на 7 дней вперёд — с коротким советом на каждый день.";
-    return h("section", { class: "card week-invite", id: src === "home" ? "weekInvite" : null, "aria-labelledby": "weekInvTitle-" + src }, [
+    var id = src === "home" ? "weekInvite" : null;
+    if (st.open) {
+      var now = new Date(), p = predictionFor(now);
+      return h("section", { class: "card week-invite week-today", id: id, "aria-labelledby": "weekInvTitle-" + src }, [
+        h("div", { class: "week-invite-head" }, [icon("calendar"), h("h2", { id: "weekInvTitle-" + src, text: "Ваше предсказание на сегодня" })]),
+        h("p", { class: "week-date", text: "Сегодня, " + dateLabel(now) }),
+        predMoodBadge(p.mood),
+        h("p", { class: "week-text", text: p.text }),
+        p.tip ? h("p", { class: "week-tip" }, [h("b", { text: "Совет: " }), p.tip]) : null,
+        h("a", { class: "btn btn-wide btn-primary", href: "#week", "data-src": src }, "Вся моя неделя")
+      ]);
+    }
+    return h("section", { class: "card week-invite", id: id, "aria-labelledby": "weekInvTitle-" + src }, [
       h("div", { class: "week-invite-head" }, [icon("calendar"), h("h2", { id: "weekInvTitle-" + src, text: "Мой сонник на неделю" })]),
-      h("p", { text: text }),
-      h("a", { class: "btn btn-wide" + (st.open ? " btn-primary" : ""), href: "#week", "data-src": src },
-        st.open ? "Смотреть мою неделю" : st.expired ? "Открыть новую неделю" : "Узнать, что ждёт на неделе")
+      h("p", { text: st.expired ? "Ваша неделя закончилась — откройте новую." : "Ваше личное предсказание на каждый из 7 дней — у каждого своё." }),
+      h("a", { class: "btn btn-wide", href: "#week", "data-src": src }, st.expired ? "Открыть новую неделю" : "Узнайте, что ждёт вас на неделе")
     ]);
   }
 
@@ -576,39 +679,58 @@
       notice = h("p", { class: "notice notice-" + weekNotice.kind, role: "status", text: weekNotice.text });
       weekNotice = null;
     }
+    var days = weekDays(new Date());
     if (st.open) {
       app.appendChild(h("div", { class: "card week-head" }, [t,
-        h("p", { class: "lead", text: "Открыт до " + weekUntilLabel() + " включительно. Каждый день здесь — сны дня на 7 дней вперёд." })]));
+        h("p", { class: "lead", text: "Ваше личное предсказание на каждый из 7 дней. Открыт до " + weekUntilLabel() + " включительно." })]));
       if (notice) app.appendChild(notice);
-      var today = new Date();
-      app.appendChild(h("ol", { class: "week-list" }, weekDreams(today).map(function (x, i) {
-        var d = x.dream;
-        if (!d) return null;
+      app.appendChild(h("ol", { class: "week-list" }, days.map(function (x, i) {
+        var shareDay = h("button", { type: "button", class: "btn btn-small week-share" }, [icon("share"), "Поделиться"]);
+        shareDay.addEventListener("click", function () { share(dayShareItem(x, i), shareDay); });
         return h("li", { class: "card week-day" }, [
-          h("p", { class: "week-date", text: (i === 0 ? "Завтра, " : weekdayLabel(x.date) + ", ") + dateLabel(x.date) }),
-          h("a", { class: "week-title", href: "#dream=" + encodeURIComponent(d.id), "data-src": "week" }, d.title),
-          moodBadge(d.mood),
-          d.tip ? h("p", { class: "week-tip" }, [h("b", { text: "Совет: " }), d.tip]) : null
+          h("p", { class: "week-date", text: dayTitle(x.date, i) }),
+          predMoodBadge(x.pred.mood),
+          h("p", { class: "week-text", text: x.pred.text }),
+          x.pred.tip ? h("p", { class: "week-tip" }, [h("b", { text: "Совет: " }), x.pred.tip]) : null,
+          x.dream ? h("p", { class: "week-dream" }, ["Сон дня: ", h("a", { href: "#dream=" + encodeURIComponent(x.dream.id), "data-src": "week" }, x.dream.title)]) : null,
+          shareDay
         ]);
       })));
-      app.appendChild(h("p", { style: "margin:18px 0" }, h("a", { class: "btn btn-wide", href: "#" }, "На главную")));
+      var shareWeek = h("button", { type: "button", class: "btn btn-primary btn-wide" }, [icon("share"), "Поделиться неделей"]);
+      shareWeek.addEventListener("click", function () { share(weekShareItem(), shareWeek); });
+      app.appendChild(h("div", { class: "actions" }, [shareWeek, h("a", { class: "btn btn-wide", href: "#" }, "На главную")]));
       return t;
     }
     // Сюда попадаем, только если реклама за награду доступна (иначе render() открывает главную).
     var adBtn = h("button", { type: "button", class: "btn btn-primary btn-wide", id: "weekAdBtn" }, st.expired ? "Смотреть рекламу и открыть новую" : "Смотреть рекламу и открыть");
     if (src && src !== "rerender") weekSrc = src;
     adBtn.addEventListener("click", function () { startWeekAd(weekSrc); });
+    // Пример — завтрашний день: заголовок и первые слова, остальное под замком.
+    var tm = days[0];
+    var words = tm.pred.text.split(/\s+/);
+    var sample = h("div", { class: "card week-sample", "aria-label": "Пример: предсказание на завтра, остальное откроется после рекламы" }, [
+      h("p", { class: "week-sample-label", text: "Например, ваше завтра:" }),
+      h("p", { class: "week-date", text: dayTitle(tm.date, 0) }),
+      h("p", { class: "week-text" }, [words.slice(0, Math.min(4, words.length - 1)).join(" ") + " ",
+        h("span", { class: "week-blur", "aria-hidden": "true", text: "████ ███████ ██ █████ ██████ ███ ████████ █████" })]),
+      h("p", { class: "week-tip week-blur-tip", "aria-hidden": "true" }, [h("b", { text: "Совет: " }), h("span", { class: "week-blur", text: "██████ ████ ███████ ██ ████" })]),
+      h("p", { class: "week-lock" }, [icon("lock"), "Остальное откроется после рекламы"])
+    ]);
     app.appendChild(h("div", { class: "card week-head" }, [t,
       st.expired ? h("p", { class: "lead week-expired", text: "Ваша неделя закончилась — откройте новую." }) : null,
-      h("p", { class: "lead", text: "Сны дня на 7 дней вперёд — с коротким советом на каждый день." }),
+      h("p", { class: "lead", text: "Ваше личное предсказание на каждый из 7 дней — у каждого своё. С коротким советом на каждый день." })
+    ]));
+    app.appendChild(sample);
+    if (notice) app.appendChild(notice);
+    app.appendChild(h("div", { class: "actions" }, [adBtn]));
+    app.appendChild(h("div", { class: "card week-head week-points-card" }, [
       h("ul", { class: "week-points" }, [
         h("li", { text: "Посмотрите короткую рекламу — неделя откроется сразу." }),
         h("li", { text: "Открывается на " + WEEK_DAYS + " дней, потом можно открыть снова." }),
         h("li", { text: "Толкования снов всегда бесплатны — реклама нужна только для недели." })
       ])
     ]));
-    if (notice) app.appendChild(notice);
-    app.appendChild(h("div", { class: "actions" }, [adBtn, h("a", { class: "btn btn-wide", href: "#" }, "На главную")]));
+    app.appendChild(h("p", { style: "margin:18px 0" }, h("a", { class: "btn btn-wide", href: "#" }, "На главную")));
     if (src && src !== "rerender") AN.event("week_offer_shown", { source: src });
     return t;
   }
@@ -1022,7 +1144,7 @@
   }
   // Заголовки, названия снов, разделы: если одно слово шире строки (узкий экран и шрифт 200%),
   // не рвём слово, а уменьшаем шрифт этого элемента (не меньше чем вдвое).
-  var WORD_FIT = "h1, h2, .item-title > span, .cat-name, .week-title, .chip, .mood, .search-label";
+  var WORD_FIT = "h1, h2, .item-title > span, .cat-name, .week-date, .chip, .mood, .search-label";
   function fitWords() {
     var els = document.querySelectorAll(WORD_FIT), i;
     for (i = 0; i < els.length; i++) if (els[i].style.fontSize) els[i].style.fontSize = "";
@@ -1072,27 +1194,37 @@
   // Решение Романа 11 ноя: на компьютере всегда наше окно (в системном меню
   // ВК и ОК обычно нет); на телефоне и планшете — системное меню, если оно есть.
   // В ВК и ОК — всегда наше окно: первая кнопка там — «поделиться» самой площадки.
-  function share(d, opener) {
-    var text = shareText(d), url = shareUrl(d);
+  // Что делимся: сон (с открыткой), неделя или один день недели.
+  function dreamShareItem(d) {
+    return { what: "dream", heading: "Поделиться сном", title: "Сонник: " + d.title, text: shareText(d), url: shareUrl(d), dream: d };
+  }
+  function shareMark(item, ch) {
+    var ev = { channel: ch, what: item.what };
+    if (item.dream) ev.dream_id = item.dream.id;
+    AN.event("share_clicked", ev);
+  }
+  function share(item, opener) {
+    if (!item.what) item = dreamShareItem(item);
     if (navigator.share && !isDesktop() && !(PF && PF.nativeShareChannel())) {
-      AN.event("share_clicked", { channel: "system", dream_id: d.id });
-      navigator.share({ title: "Сонник: " + d.title, text: text, url: url }).catch(function (e) {
+      shareMark(item, "system");
+      navigator.share({ title: item.title, text: item.text, url: item.url }).catch(function (e) {
         if (e && e.name === "AbortError") return;
-        openShareModal(d, opener);
+        openShareModal(item, opener);
       });
       return;
     }
-    openShareModal(d, opener);
+    openShareModal(item, opener);
   }
 
-  function openShareModal(d, opener) {
-    var text = shareText(d), url = shareUrl(d);
+  function openShareModal(item, opener) {
+    var d = item.dream || null;
+    var text = item.text, url = item.url;
     var vk = "https://vk.com/share.php?url=" + encodeURIComponent(url) + "&title=" + encodeURIComponent(text);
     var ok = "https://connect.ok.ru/offer?url=" + encodeURIComponent(url) +
-      "&title=" + encodeURIComponent("Сонник: " + d.title) + "&description=" + encodeURIComponent(text);
+      "&title=" + encodeURIComponent(item.title) + "&description=" + encodeURIComponent(text);
     var native = PF ? PF.nativeShareChannel() : "";
     var links = !PF || PF.externalLinksAllowed();
-    var mark = function (ch) { return function () { AN.event("share_clicked", { channel: ch, dream_id: d.id }); }; };
+    var mark = function (ch) { return function () { shareMark(item, ch); }; };
     // Своя площадка — её окном «поделиться»; другая сеть — ссылкой, если площадка разрешает ссылки.
     function netButton(ch, cls, label, href) {
       if (native === ch) {
@@ -1113,26 +1245,29 @@
         toast(okk ? "Текст скопирован — вставьте его в сообщение" : "Не получилось скопировать");
       });
     });
-    var cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка со сном"]);
-    cardBtn.addEventListener("click", function () { openPostcard(d, opener); });
+    var cardBtn = null;
+    if (d) {
+      cardBtn = h("button", { type: "button", class: "btn btn-wide" }, [icon("card"), "Открытка со сном"]);
+      cardBtn.addEventListener("click", function () { openPostcard(d, opener); });
+    }
     var vkBtn = netButton("vk", "btn-vk", native === "vk" ? "Поделиться ВКонтакте" : "ВКонтакте", vk);
     var okBtn = netButton("ok", "btn-ok", native === "ok" ? "Поделиться в Одноклассниках" : "Одноклассники", ok);
     var nets = native === "ok" ? [okBtn, vkBtn] : [vkBtn, okBtn];
     var parts = [
       h("p", { class: "share-preview", text: text + " " + url }),
-      h("div", { class: "stack" }, nets.concat([copyBtn, cardBtn]))
+      h("div", { class: "stack" }, nets.concat([copyBtn, cardBtn]).filter(Boolean))
     ];
     // На компьютере (и в ВК/ОК) системное меню — маленькой второстепенной кнопкой.
     if (navigator.share && (isDesktop() || native)) {
       var other = h("button", { type: "button", class: "link-btn share-other" }, "Другие приложения…");
       other.addEventListener("click", function () {
         mark("system")();
-        navigator.share({ title: "Сонник: " + d.title, text: text, url: url }).catch(function () { /* закрыли меню — ничего */ });
+        navigator.share({ title: item.title, text: text, url: url }).catch(function () { /* закрыли меню — ничего */ });
       });
       parts.push(h("p", { class: "share-other-wrap" }, other));
     }
     var body = h("div", null, parts);
-    openModal("Поделиться сном", body, opener);
+    openModal(item.heading || "Поделиться", body, opener);
   }
 
   function copyText(str) {
@@ -1234,7 +1369,7 @@
   }
 
   function openPostcard(d, opener, again) {
-    if (!again) AN.event("share_clicked", { channel: "postcard", dream_id: d.id });
+    if (!again) AN.event("share_clicked", { channel: "postcard", what: "dream", dream_id: d.id });
     var canvas = makePostcard(d);
     var img = h("img", { class: "postcard-img", alt: "Открытка: " + d.title + ". " + d.short, width: "360", height: "360" });
     var fileName = "sonnik-" + d.id + ".png";
@@ -1387,12 +1522,17 @@
     drawSky();
     watchButtons();
     AN.init(PF && PF.hasBridge ? PF.bridge : null, { appVersion: CFG.version || "" });
-    var load = PF ? PF.load([KEY_RECENT, KEY_WEEK]) : Promise.resolve({});
+    var load = PF ? PF.load([KEY_RECENT, KEY_WEEK, KEY_SEED]) : Promise.resolve({});
     load.then(function (data) {
       if (data && Array.isArray(data[KEY_RECENT])) store[KEY_RECENT] = data[KEY_RECENT].map(String).slice(0, 8);
       if (data && data[KEY_WEEK] && typeof data[KEY_WEEK] === "object") store[KEY_WEEK] = data[KEY_WEEK];
+      var sd = data && data[KEY_SEED];
+      if (typeof sd === "string" && /^\d+$/.test(sd)) sd = parseInt(sd, 10);
+      if (typeof sd === "number" && sd > 0) store[KEY_SEED] = sd;
     }, function () { /* без сохранённого */ }).then(function () {
-      AN.event("app_opened", { entry: parseHash().name, returning: getRecent().length > 0 || !!store[KEY_WEEK] });
+      var returning = getRecent().length > 0 || !!store[KEY_WEEK] || !!store[KEY_SEED];
+      if (!store[KEY_SEED]) { var o = {}; o[KEY_SEED] = newSeed(); saveKeys(o, true); }
+      AN.event("app_opened", { entry: parseHash().name, returning: returning });
       render(true);
       scheduleMidnight();
       ready = true;
@@ -1406,7 +1546,7 @@
   // Для автотеста.
   window.Sonnik = {
     isDesktop: isDesktop, dreamOfDay: dreamOfDay, shareText: shareText, shareUrl: shareUrl, count: DREAMS.length,
-    weekDreams: weekDreams, weekState: weekState,
+    weekDays: weekDays, weekState: weekState, predictionFor: predictionFor, seed: personalSeed, predCount: PREDS.length,
     isReady: function () { return ready; },
     adGrants: function () { return adGrants; },
     adBusy: function () { return adBusy; }

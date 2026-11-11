@@ -50,13 +50,18 @@
   <script>
   /* Запуск: сначала площадка (Playgama Bridge), потом база снов и само приложение. */
   (function () {
-    var files = ["data/dreams.js", "search.js", "app.js"];
+    // predictions.js — по желанию: нет файла — нет и «недели», остальное работает.
+    var files = ["data/dreams.js", "data/predictions.js", "search.js", "app.js"];
+    var optional = { "data/predictions.js": true };
     function load(i) {
       if (i >= files.length) return;
       var s = document.createElement("script");
       s.src = files[i];
       s.onload = function () { load(i + 1); };
-      s.onerror = function () { var n = document.getElementById("bootNote"); if (n) n.textContent = "Не получилось загрузить сонник. Обновите страницу."; };
+      s.onerror = function () {
+        if (optional[files[i]]) { load(i + 1); return; }
+        var n = document.getElementById("bootNote"); if (n) n.textContent = "Не получилось загрузить сонник. Обновите страницу.";
+      };
       document.body.appendChild(s);
     }
     // Bridge ждём не дольше 8 с, и всё вместе — не дольше 10 с от начала загрузки страницы.

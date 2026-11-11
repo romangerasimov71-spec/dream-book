@@ -170,7 +170,7 @@ h1:focus, h2:focus { outline: none; }
 .btn-row.one-col, .modal .stack.one-col { grid-template-columns: 1fr; }
 /* Временные классы для замеров в app.js (fitButtons, fitWords). */
 .measure-nowrap .btn { white-space: nowrap !important; }
-.measure-words :is(h1, h2, .item-title > span, .cat-name, .week-title, .chip, .mood, .search-label) { overflow-wrap: normal !important; word-break: normal !important; }
+.measure-words :is(h1, h2, .item-title > span, .cat-name, .week-date, .chip, .mood, .search-label) { overflow-wrap: normal !important; word-break: normal !important; }
 .item-title > span, .modal-head h2 { min-width: 0; }
 .btn { max-width: 100%; }
 .tip > div, .week-invite-head h2 { min-width: 0; }
@@ -595,6 +595,21 @@ h1:focus, h2:focus { outline: none; }
   overflow-wrap: break-word; word-break: normal;
 }
 .week-tip { margin: 10px 0 0; font-size: 1.125rem; }
+.week-day .mood { margin: 2px 0 0; }
+.week-text { margin: 10px 0 0; font-size: 1.1875rem; line-height: 1.5; }
+.week-dream { margin: 10px 0 0; font-size: 1.125rem; color: var(--muted); }
+.week-dream a { display: inline-flex; align-items: center; min-height: 48px; font-weight: 700; }
+.btn.btn-small { min-height: 48px; padding: 6px 16px; font-size: 1rem; margin-top: 10px; }
+.btn.btn-small svg { width: 22px; height: 22px; }
+.week-today .week-date { margin: 10px 0 6px; }
+.week-today .week-text { margin-bottom: 4px; }
+.week-today .btn { margin-top: 14px; }
+.week-sample { margin: 0 0 14px; }
+.week-points-card { margin-top: 16px; }
+.week-sample-label { margin: 0 0 6px; color: var(--gold-hi); font-size: 1.125rem; font-weight: 700; }
+.week-blur { filter: blur(5px); color: var(--muted); user-select: none; letter-spacing: 1px; overflow-wrap: anywhere; }
+.week-lock { display: flex; align-items: center; gap: 8px; margin: 12px 0 0; font-size: 1.125rem; font-weight: 600; color: var(--gold-hi); }
+.week-lock svg { width: 24px; height: 24px; flex: none; }
 .week-tip b { color: var(--gold-hi); }
 .notice {
   margin: 14px 0; padding: 14px 16px; border-radius: 14px;

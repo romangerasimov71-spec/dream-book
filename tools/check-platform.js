@@ -84,22 +84,22 @@ const bannerHidden = (page) => page.evaluate(() => { const b = document.querySel
 async function layout(page, label) {
   const r = await page.evaluate(() => {
     const small = [];
-    document.querySelectorAll("main .btn, main .chip, main .item, main .back-link, main .week-title, .modal .btn, .modal .close, .ad-wait .btn").forEach((el) => {
+    document.querySelectorAll("main .btn, main .chip, main .item, main .back-link, main .week-dream a, .modal .btn, .modal .close, .ad-wait .btn").forEach((el) => {
       const b = el.getBoundingClientRect();
       if (b.width && b.height < 47.5) small.push(el.className + " " + Math.round(b.height));
     });
     const txt = [];
-    document.querySelectorAll(".week-tip, .week-date, .week-points li, .notice, .week-invite p, .lead, .postcard-full-hint").forEach((el) => {
+    document.querySelectorAll(".week-tip, .week-date, .week-text, .week-dream, .week-sample-label, .week-lock, .week-points li, .notice, .week-invite p, .lead, .postcard-full-hint").forEach((el) => {
       const fs = parseFloat(getComputedStyle(el).fontSize);
       if (el.offsetParent !== null && fs < 17.9) txt.push(el.className + " " + fs);
     });
     const cut = [];
-    document.querySelectorAll("h1, h2, .btn, .week-title, .mood").forEach((el) => {
+    document.querySelectorAll("h1, h2, .btn, .week-date, .mood").forEach((el) => {
       if (el.offsetParent !== null && el.scrollWidth > el.clientWidth + 1) cut.push(el.className + " «" + el.textContent.trim().slice(0, 20) + "»");
     });
     // слова не рвутся (как в tools/check.js)
     const broken = [];
-    document.querySelectorAll(".btn, h1, h2, .week-title").forEach((el) => {
+    document.querySelectorAll(".btn, h1, h2, .week-date, .week-dream a").forEach((el) => {
       if (el.offsetParent === null) return;
       const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); let n;
       while ((n = w.nextNode())) {
@@ -265,22 +265,44 @@ async function unlockWeek(page) {
     await page.waitForFunction(() => /досмотрена/.test(document.querySelector(".fake-ad p").textContent));
     await page.click(".fake-ad-close");
     await page.waitForSelector(".week-day");
-    ok(await page.locator(".week-day").count() === 7, "досмотрена: 7 снов дня вперёд");
-    const shown = await page.locator(".week-title").allTextContents();
-    const want = await page.evaluate(() => Sonnik.weekDreams(new Date()).map((x) => x.dream.title));
-    ok(JSON.stringify(shown) === JSON.stringify(want), "те же сны, что будут «снами дня» на завтра … +7: " + shown.slice(0, 3).join(", ") + "…");
-    const want2 = await page.evaluate(() => { const n = new Date(); return [1, 2, 3, 4, 5, 6, 7].map((i) => Sonnik.dreamOfDay(new Date(n.getFullYear(), n.getMonth(), n.getDate() + i, 9)).title); });
-    ok(JSON.stringify(shown) === JSON.stringify(want2), "совпадает с правилом «сон дня» по датам");
-    ok(await page.locator(".week-tip").count() === 7, "у каждого дня — совет");
-    ok(/Завтра/.test(await page.locator(".week-date").first().textContent()), "первый день подписан «Завтра»");
+    ok(await page.locator(".week-day").count() === 7, "досмотрена: 7 карточек — предсказания на 7 дней");
+    const shown = await page.locator(".week-text").allTextContents();
+    const want = await page.evaluate(() => { const n = new Date(); return [1, 2, 3, 4, 5, 6, 7].map((i) => Sonnik.predictionFor(new Date(n.getFullYear(), n.getMonth(), n.getDate() + i, 9)).text); });
+    ok(JSON.stringify(shown) === JSON.stringify(want), "на экране — личные предсказания на завтра … +7 по формуле: «" + shown[0].slice(0, 40) + "…»");
+    ok(new Set(shown).size === 7, "7 разных предсказаний");
+    ok(await page.locator(".week-day .week-tip").count() === 7 && await page.locator(".week-day .mood").count() === 7, "у каждого дня — значок настроения и совет");
+    ok(/^Завтра, \d+ \S+$/.test(await page.locator(".week-date").first().textContent()) && /^[А-Я][а-я]+, \d+ \S+$/.test(await page.locator(".week-date").nth(1).textContent()), "даты: «Завтра, 12 ноября», «Пятница, 13 ноября»: " + await page.locator(".week-date").nth(1).textContent());
+    const dreamLine = await page.locator(".week-dream").first().textContent();
+    const dreamWant = await page.evaluate(() => Sonnik.weekDays(new Date())[0].dream.title);
+    ok(dreamLine === "Сон дня: " + dreamWant, "строка «" + dreamLine + "» ведёт к сну дня");
+    // поделиться днём и неделей
+    await page.locator(".week-share").nth(1).click(); await page.waitForSelector(".modal");
+    const dayTxt = await page.locator(".share-preview").textContent();
+    ok(/^Моё предсказание на [а-я]+, \d+ \S+: .+ — Сонник http\S+#week$/.test(dayTxt) && dayTxt.includes(shown[1]), "«Поделиться» днём: " + dayTxt.slice(0, 60) + "…");
+    ok(await page.locator(".modal button:has-text('Открытка')").count() === 0 && await page.locator(".modal .btn-vk").count() === 1 && await page.locator(".modal button:has-text('Скопировать текст')").count() === 1, "окно: ВК, ОК, скопировать (без открытки сна)");
+    await page.click(".modal button:has-text('Скопировать текст')"); await page.waitForTimeout(100);
+    await page.keyboard.press("Escape"); await page.waitForTimeout(100);
+    await page.click("button:has-text('Поделиться неделей')"); await page.waitForSelector(".modal");
+    const weekTxt = await page.locator(".share-preview").textContent();
+    ok(/^Мой сонник на неделю: Завтра — .+; .+; .+Узнайте свою неделю в Соннике http\S+#week$/.test(weekTxt), "«Поделиться неделей»: " + weekTxt.slice(0, 70) + "…");
+    await page.click(".modal .btn-vk"); await page.waitForTimeout(100);
+    await page.keyboard.press("Escape"); await page.waitForTimeout(100);
+    const sh = (await events(page)).filter((e) => e.name === "share_clicked");
+    ok(sh.some((e) => e.data.what === "day" && e.data.channel === "copy") && sh.some((e) => e.data.what === "week" && e.data.channel === "vk") && sh.every((e) => !("dream_id" in e.data)), "share_clicked what=day/week, без dream_id");
     ok(/Готово/.test(await page.locator(".notice").textContent()), "сообщение «Готово! … открыт до …»");
     ev = await events(page);
-    ok(ev.some((e) => e.name === "week_unlocked" && e.data.source === "home"), "отметка week_unlocked source=home");
+    ok(ev.some((e) => e.name === "week_unlocked" && e.data.source === "home" && Object.keys(e.data).sort().join() === "late,source"), "отметка week_unlocked source=home, ничего личного (только source, late)");
+    // главная: «Ваше предсказание на сегодня»
+    await page.goto(BASE); await page.reload(); await ready(page);
+    const todayTxt = await page.locator("#weekInvite .week-text").textContent();
+    ok(/Ваше предсказание на сегодня/.test(await page.locator("#weekInvite h2").textContent()) && todayTxt === await page.evaluate(() => Sonnik.predictionFor(new Date()).text), "главная: «Ваше предсказание на сегодня» по той же формуле");
+    ok(await page.locator("#weekInvite a[href='#week']").count() === 1, "…и ссылка на всю неделю");
+    await page.goto(BASE + "#week"); await page.reload(); await ready(page);
     // хранилище переживает перезагрузку
     await page.reload(); await ready(page);
     ok(await page.locator(".week-day").count() === 7, "после перезагрузки неделя открыта (хранилище)");
     await page.goto(BASE); await page.reload(); await ready(page);
-    ok(/Открыт до/.test(await page.locator("#weekInvite p").textContent()), "на главной: «Открыт до …»");
+    ok(/Ваше предсказание на сегодня/.test(await page.locator("#weekInvite h2").textContent()), "на главной: «Ваше предсказание на сегодня»");
     // 7 дней: день открытия + 6; на 8-й день — снова за рекламу
     const days = await page.evaluate(() => { const n = new Date(); return [0, 3, 6, 7, 30].map((i) => Sonnik.weekState(new Date(n.getFullYear(), n.getMonth(), n.getDate() + i, 12)).open); });
     ok(JSON.stringify(days) === "[true,true,true,false,false]", "держится 7 дней (0,3,6 — открыт; 7, 30 — закрыт): " + JSON.stringify(days));
@@ -298,6 +320,65 @@ async function unlockWeek(page) {
     await page.context().close();
   }
 
+  console.log("\nЛичные предсказания (формула):");
+  {
+    const page = await open(browser, BASE);
+    const r = await page.evaluate(() => {
+      const n0 = new Date(2026, 10, 1, 12);
+      const day = (i) => new Date(n0.getFullYear(), n0.getMonth(), n0.getDate() + i, 12);
+      let sameOk = true, distinctBad = 0, warnBad = 0, diffSeeds = 0, checked = 0;
+      const prev = new Set();
+      for (let s = 1; s <= 1000; s++) {
+        const seed = s * 7919 + 13;
+        const ids = [], warn = [];
+        for (let i = 0; i < 66; i++) { const p = Sonnik.predictionFor(day(i), seed); ids.push(p.id); warn.push(p.mood === "warn" ? 1 : 0); }
+        for (let i = 0; i + 7 <= 66; i++) {
+          checked++;
+          if (new Set(ids.slice(i, i + 7)).size !== 7) distinctBad++;
+          if (warn.slice(i, i + 7).reduce((a, b) => a + b, 0) > 1) warnBad++;
+        }
+        if (Sonnik.predictionFor(day(5), seed).id !== ids[5] || Sonnik.predictionFor(new Date(day(5).getTime() - 11 * 3600e3), seed).id !== ids[5]) sameOk = false;
+        const key = ids.slice(0, 7).join();
+        if (!prev.has(key)) diffSeeds++;
+        prev.add(key);
+      }
+      return { sameOk, distinctBad, warnBad, diffSeeds, checked, n: Sonnik.predCount };
+    });
+    ok(r.n === 100, "предсказаний загружено: " + r.n);
+    ok(r.sameOk, "тот же seed + та же дата → то же предсказание (и утром, и вечером)");
+    ok(r.distinctBad === 0, "7 дней подряд — 7 разных (проверено окон: " + r.checked + ", нарушений " + r.distinctBad + ")");
+    ok(r.warnBad === 0, "не больше одного «будьте внимательнее» за любые 7 дней (1000 seed × 60 дат, нарушений " + r.warnBad + ")");
+    ok(r.diffSeeds >= 990, "у разных seed разные недели: " + r.diffSeeds + " из 1000");
+    // seed: создаётся один раз и переживает перезагрузку
+    const s1 = await page.evaluate(() => Sonnik.seed());
+    const stored = await page.evaluate(() => Platform.load(["sonnik_seed"]).then((d) => d.sonnik_seed));
+    await page.reload(); await ready(page);
+    const s2 = await page.evaluate(() => Sonnik.seed());
+    ok(s1 > 1 && s1 === s2 && Number(stored) === s1, "личный seed хранится и переживает перезагрузку: " + s1);
+    const ctx2 = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const p2 = await ctx2.newPage(); await p2.goto(BASE); await ready(p2);
+    ok(await p2.evaluate(() => Sonnik.seed()) !== s1, "у другого человека (новый браузер) — другой seed");
+    await ctx2.close();
+    // экран предложения: пример — завтрашний день, первые слова
+    await page.goto(BASE + "#week"); await page.reload(); await ready(page);
+    const sample = await page.evaluate(() => { const t = document.querySelector(".week-sample .week-text"); return { first: t.firstChild.textContent.trim(), date: document.querySelector(".week-sample .week-date").textContent }; });
+    const tomorrow = await page.evaluate(() => Sonnik.weekDays(new Date())[0].pred.text);
+    ok(/^Завтра, /.test(sample.date) && tomorrow.startsWith(sample.first) && sample.first.split(" ").length <= 4 && sample.first.length < tomorrow.length, "пример: «" + sample.date + "» — «" + sample.first + "…», остальное под замком");
+    ok(!(await page.locator(".week-sample").textContent()).includes(tomorrow), "полный текст примера не показан");
+    ok(/у каждого своё/.test(await page.locator("main").textContent()), "объяснение «у каждого своё»");
+    await page.goto(BASE); await page.reload(); await ready(page);
+    ok((await page.locator("#weekInvite .btn").textContent()).trim() === "Узнайте, что ждёт вас на неделе", "приглашение на главной: «Узнайте, что ждёт вас на неделе»");
+    await page.context().close();
+  }
+  {
+    // нет файла предсказаний — неделя недоступна, остальное работает
+    const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "ru-RU" });
+    await ctx.route("**/data/predictions.js", (r) => r.abort());
+    const page = await open(browser, BASE + "#week", null, { ctx });
+    ok(await page.locator(".search-input").count() === 1 && await page.locator("#weekInvite").count() === 0, "без data/predictions.js: приложение работает, недели нет, #week → главная");
+    await ctx.close();
+  }
+
   console.log("\nПолночь на экране недели:");
   {
     const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, locale: "ru-RU" });
@@ -309,18 +390,20 @@ async function unlockWeek(page) {
     await page.evaluate(() => { const n = new Date(); const d = Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); return Platform.save({ sonnik_week: { from: d - 6 } }); });
     await page.reload(); await ready(page);
     const before = await page.locator(".week-day").count();
-    const firstBefore = await page.locator(".week-title").first().textContent();
+    const firstBefore = await page.locator(".week-text").first().textContent();
     await page.clock.runFor(2 * 60 * 1000);
     await page.waitForTimeout(200);
     ok(before === 7 && await page.locator(".week-day").count() === 0 && /закончилась/.test(await page.locator("main").textContent()), "в полночь экран недели обновился: последний день прошёл — «неделя закончилась»");
     await page.evaluate(() => { const n = new Date(); const d = Math.floor(Date.UTC(n.getFullYear(), n.getMonth(), n.getDate()) / 86400000); return Platform.save({ sonnik_week: { from: d } }); });
     await page.reload(); await ready(page);
-    const first = await page.locator(".week-title").first().textContent();
+    const first = await page.locator(".week-text").first().textContent();
+    const secondDay = await page.locator(".week-text").nth(1).textContent();
     await page.clock.runFor(24 * 3600 * 1000);
     await page.waitForTimeout(200);
-    const second = await page.locator(".week-title").first().textContent();
-    const want = await page.evaluate(() => Sonnik.weekDreams(new Date())[0].dream.title);
-    ok(second === want && first !== second, "в следующую полночь список сдвинулся на день: «" + first + "» → «" + second + "» (было до полуночи: " + firstBefore + ")");
+    const second = await page.locator(".week-text").first().textContent();
+    const want = await page.evaluate(() => Sonnik.weekDays(new Date())[0].pred.text);
+    ok(second === secondDay, "предсказание на день не меняется: вчерашнее «послезавтра» стало «завтра»");
+    ok(second === want && first !== second, "в следующую полночь список сдвинулся на день: «" + first.slice(0, 25) + "…» → «" + second.slice(0, 25) + "…» (до полуночи: " + firstBefore.slice(0, 20) + "…)");
     await ctx.close();
   }
 
@@ -493,15 +576,19 @@ async function unlockWeek(page) {
   }
 
   console.log("\nУзкие экраны и крупный шрифт (неделя):");
-  for (const [w, big] of [[320, false], [360, false], [390, true], [1366, true]]) {
-    const label = w + (big ? " шрифт 200%" : "");
-    const page = await open(browser, BASE + "?fakeadsec=1#week", { width: w, height: 760 }, { touch: w < 500, bigFont: big });
+  for (const [w, hgt, big] of [[320, 568, false], [360, 760, false], [390, 844, true], [320, 568, true], [844, 390, true], [1366, 768, true]]) {
+    const label = w + "×" + hgt + (big ? " шрифт 200%" : "");
+    const page = await open(browser, BASE + "?fakeadsec=1#week", { width: w, height: hgt }, { touch: w < 900, bigFont: big });
+    await bannerClear(page, label + " неделя (закрыта, пример)");
     await layout(page, label + " неделя (закрыта)");
     await page.goto(BASE + "?fakeadsec=1"); await page.reload(); await ready(page);
     await layout(page, label + " главная с приглашением");
     await page.goto(BASE + "?fakeadsec=1#week"); await page.reload(); await ready(page);
     await unlockWeek(page);
     await layout(page, label + " неделя (открыта)");
+    await bannerClear(page, label + " неделя (открыта)");
+    await page.goto(BASE + "?fakeadsec=1"); await page.reload(); await ready(page);
+    await layout(page, label + " главная: предсказание на сегодня");
     if (big && w === 390) await shot(page, "week-open-font200");
     await page.context().close();
   }
