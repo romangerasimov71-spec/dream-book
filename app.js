@@ -1519,6 +1519,16 @@
     if (!adBusy) rerenderWeek();   // экран недели — тоже новый день (и «неделя закончилась»)
   }
 
+  // Строка поддержки по площадке: в ОК — только группа ОК (ни vk.com, ни «ВКонтакте» — риск отказа ОК),
+  // во ВК и в обычном браузере — сообщество ВК. SUPPORT может быть и старой строкой.
+  function supportText() {
+    var sp = CFG.SUPPORT;
+    if (!sp) return "";
+    if (typeof sp === "string") return sp;
+    var where = PF ? (PF.launch || (PF.id === "vk" || PF.id === "ok" ? PF.id : "")) : "";
+    return (where === "ok" ? sp.ok : sp.vk) || "";
+  }
+
   function start() {
     // Ссылка из площадки: во ВК всё после # в адресе приложения приходит как payload.
     var pl = PF && PF.payload;
@@ -1552,9 +1562,9 @@
     window.addEventListener("pagehide", flushSave);
     watchKeyboard();
 
-    // Канал поддержки (требование ВК): config.js SUPPORT. Пусто — строки нет.
-    var supNote = document.getElementById("supportNote");
-    if (supNote && CFG.SUPPORT) { supNote.textContent = "Поддержка и новинки: " + CFG.SUPPORT; supNote.hidden = false; }
+    // Канал поддержки (требование ВК): config.js SUPPORT. В ОК — группа ОК, иначе — ВК. Пусто — строки нет.
+    var supNote = document.getElementById("supportNote"), sup = supportText();
+    if (supNote && sup) { supNote.textContent = "Поддержка и новинки: " + sup; supNote.hidden = false; }
 
     if (window.DREAMS_DEMO) {
       var note = document.getElementById("demoNote");

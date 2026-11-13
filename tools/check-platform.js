@@ -146,6 +146,8 @@ async function unlockWeek(page) {
     ok(await page.locator(".week-invite").count() === 1, "на экране сна дня есть приглашение");
     await page.goto(BASE + "#dream=" + (day === "sobaka" ? "koshka" : "sobaka")); await page.reload(); await ready(page);
     ok(await page.locator(".week-invite").count() === 0, "на экране обычного сна приглашения нет");
+    const sup = await page.evaluate(() => { const n = document.getElementById("supportNote"); return n && !n.hidden ? n.textContent : ""; });
+    ok(sup === "Поддержка и новинки: vk.com/club243202759", "в обычном браузере строка поддержки — сообщество ВК («" + sup + "»)");
     ok(!page._errors.length, "ошибок в консоли нет " + JSON.stringify(page._errors));
     await page.context().close();
   }
@@ -532,9 +534,11 @@ async function unlockWeek(page) {
       ok(st.url === APP_CONFIG_URL[where] && !st.links, label + ": ссылка " + st.url + ", ссылки наружу запрещены");
       await page.click(".btn-share-top"); await page.waitForSelector(".modal");
       const txt = await page.evaluate(() => document.body.innerText + " " + [...document.querySelectorAll("a[href]")].map((a) => a.href).join(" "));
-      if (where === "ok") ok(!/ВКонтакте|vk\.com\/(app|share)|github\.io|connect\.ok/i.test(txt), label + ": в ОК нет ВКонтакте, vk.com/app, github.io и внешних ссылок");
+      if (where === "ok") ok(!/ВКонтакте|vk\.com|github\.io|connect\.ok/i.test(txt), label + ": в ОК нет ВКонтакте, vk.com, github.io и внешних ссылок");
       else ok(!/Одноклассник|ok\.ru|github\.io/i.test(txt), label + ": во ВК нет Одноклассников и ok.ru");
       ok(await page.locator(".modal a[target=_blank]").count() === 0, label + ": в окне «Поделиться» нет ссылок наружу");
+      const sup = await page.evaluate(() => { const n = document.getElementById("supportNote"); return n && !n.hidden ? n.textContent : ""; });
+      ok(sup === "Поддержка и новинки: " + (where === "ok" ? "ok.ru/group/70000061487179" : "vk.com/club243202759"), label + ": строка поддержки «" + sup + "»");
       if (net === "fake" && st.native) {
         await page.locator(".modal .stack .btn").first().click(); await page.waitForTimeout(200);
         const calls = await page.evaluate(() => (window.__vkb || []).filter((c) => c.m === "VKWebAppShare"));
